@@ -288,6 +288,101 @@ def atr_filter(df, name=""):
         return f"{name} ✅ 波动正常"
 
 # ===============================
+# 剃头皮震荡识别（1m🔥）
+# ===============================
+def detect_scalping_range(df):
+    if len(df) < 20:
+        return "数据不足", None, None
+
+    recent = df.tail(15)
+
+    high = recent["high"].max()
+    low = recent["low"].min()
+    mean_price = recent["close"].mean()
+
+    # 区间幅度（控制在0.2%以内）
+    range_pct = (high - low) / mean_price
+
+    if range_pct > 0.002:
+        return "非震荡（波动过大）", None, None
+
+    # 边界触碰次数
+    touch_high = (recent["high"] > high * 0.999).sum()
+    touch_low = (recent["low"] < low * 1.001).sum()
+
+    if touch_high >= 2 and touch_low >= 2:
+        return "🟡 可剃头皮", high, low
+
+    return "震荡不足", None, None
+
+def atr_filter_scalping(df):
+    atr = (df["high"] - df["low"]).rolling(14).mean()
+
+    current = atr.iloc[-1]
+    mean = atr.rolling(50).mean().iloc[-1]
+
+    if current >= mean * 1.8:
+        return "❌ 波动过大"
+    elif current <= mean * 0.6:
+        return "❌ 波动过小"
+    else:
+        return "✅ 可剃头皮"
+
+
+def is_low_volume(df):
+    if len(df) < 60:
+        return False
+
+    vol = df["volume"]
+    last_vol = vol.iloc[-2]
+
+    lowest_5 = vol.nsmallest(5)
+    avg_low = lowest_5.mean()
+
+    return avg_low * 0.85 <= last_vol <= avg_low * 1.15
+
+
+def is_volume_expand(df):
+    vol = df["volume"]
+
+    return vol.iloc[-1] > vol.iloc[-2] * 1.5
+
+# ===============================
+# MACD金叉检测（5m🔥）
+# ===============================
+def is_macd_golden_cross(df):
+    close = df["close"]
+
+    ema12 = close.ewm(span=12).mean()
+    ema26 = close.ewm(span=26).mean()
+    macd = ema12 - ema26
+    signal = macd.ewm(span=9).mean()
+
+    # 最近两根K线
+    if len(macd) < 2:
+        return False
+
+    # 金叉：从下往上穿
+    return macd.iloc[-2] < signal.iloc[-2] and macd.iloc[-1] > signal.iloc[-1]
+
+# ===============================
+# MACD死叉检测（5m🔥） （做空用）
+# ===============================
+def is_macd_dead_cross(df):
+    close = df["close"]
+
+    ema12 = close.ewm(span=12).mean()
+    ema26 = close.ewm(span=26).mean()
+    macd = ema12 - ema26
+    signal = macd.ewm(span=9).mean()
+
+    if len(macd) < 2:
+        return False
+
+    return macd.iloc[-2] > signal.iloc[-2] and macd.iloc[-1] < signal.iloc[-1]
+
+
+# ===============================
 # ATR最终交易判断函数
 # ===============================
 def can_trade(atr_1m_status, atr_5m_status):
@@ -343,17 +438,123 @@ def monitor():
         trend_15m = analyze_trend(df_15m)
         trend_1h = analyze_trend(df_1h)
 
+        # ===============================
+        # 🎯 策略引擎（核心🔥）
+        # ===============================
+
+        # ===== 1️⃣ 剃头皮判断 =====
+        range_status, range_high, range_low = detect_scalping_range(df_1m)
+        atr_status = atr_filter_scalping(df_1m)
+
+        scalp_signal = (
+                "可剃头皮" in range_status and
+                "可剃头皮" in atr_status
+        )
+
+        # ===== 边界判断（剃头皮必须条件🔥）
+        price = df_1m["close"].iloc[-1]
+
+        near_low = False
+        near_high = False
+
+        if range_low and range_high:
+            near_low = price <= range_low * 1.001
+            near_high = price >= range_high * 0.999
+
+        # ===== 2️⃣ 趋势追单判断 =====
+        low_vol = is_low_volume(df_1m)
+        vol_expand = is_volume_expand(df_1m)
+
+        trend_long = (
+                trend_5m in ["🟢 强多", "🟡 偏多"]
+                and trend_15m in ["🟢 强多", "🟡 偏多"]
+                and trend_1h in ["🟢 强多", "🟡 偏多"]
+        )
+
+        trend_short = (
+                trend_5m in ["🔴 强空", "🟠 偏空"]
+                and trend_15m in ["🔴 强空", "🟠 偏空"]
+                and trend_1h in ["🔴 强空", "🟠 偏空"]
+        )
+
+        # ===== 金叉 / 死叉（趋势启动确认🔥）
+        golden_cross = is_macd_golden_cross(df_5m)
+        dead_cross = is_macd_dead_cross(df_5m)
+
+        trend_signal = False
+
+        if trend_long and golden_cross and low_vol and vol_expand:
+            trend_signal = "🔵 追多"
+
+        elif trend_short and dead_cross and low_vol and vol_expand:
+            trend_signal = "🔴 追空"
+
+        if trend_long and golden_cross and low_vol and vol_expand:
+            trend_signal = "🔵 做多（趋势启动）"
+
+        elif trend_short and dead_cross and low_vol and vol_expand:
+            trend_signal = "🔴 做空（趋势启动）"
+
+        # ===== 3️⃣ 最终信号 =====
+        entry_signal = "⛔ 不交易"
+
+        if scalp_signal and near_low:
+            entry_signal = "🟢 向上剃头皮"
+
+        elif scalp_signal and near_high:
+            entry_signal = "🟠 向下剃头皮"
+
+
+        elif trend_signal:
+
+            entry_signal = trend_signal
+
+        # ===== 4️⃣ 不追高过滤 =====
+        ema20 = df_1m["close"].ewm(span=20).mean().iloc[-1]
+
+
+        if abs(price - ema20) / price > 0.002:
+            entry_signal = "⛔ 偏离过大，不追"
+            # ===== ATR总风控（最终拦截🔥）
+            if "禁止交易" in trade_status:
+                entry_signal = "⛔ ATR风控：禁止交易"
 
         print("\n====== 多周期趋势 ======")
         print("5分钟趋势:", trend_5m)
         print("15分钟趋势:", trend_15m)
         print("1小时趋势:", trend_1h)
+        # ===============================
+        # 周期一致性判断🔥
+        # ===============================
+        if trend_5m == trend_15m == trend_1h:
+            trend_sync = "✅ 一致"
+        else:
+            trend_sync = "❌ 不一致"
+
+        print("周期一致:", trend_sync)
 
         print("\n====== ATR波动过滤 ======")
         print(atr_1m)
         print(atr_5m)
         print("最终交易状态:", trade_status)
 
+        print("\n====== 策略信号 ======")
+        print("信号:", entry_signal)
+        # ===============================
+        # 当前交易策略（提取方向🔥）
+        # ===============================
+        strategy_name = "不交易"
+
+        if "追多" in entry_signal:
+            strategy_name = "追多"
+        elif "追空" in entry_signal:
+            strategy_name = "追空"
+        elif "向上剃头皮" in entry_signal:
+            strategy_name = "向上剃头皮"
+        elif "向下剃头皮" in entry_signal:
+            strategy_name = "向下剃头皮"
+
+        print("当前交易策略:", strategy_name)
         if indicators:
             print("ATR:", round(indicators["atr"], 4))
             print("MACD:", round(indicators["macd"], 4))
