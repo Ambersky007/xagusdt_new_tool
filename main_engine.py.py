@@ -7,7 +7,7 @@ import time  # 用于设置时间间隔、休眠等操作
 import pandas as pd  # 用于数据处理和分析（核心数据结构DataFrame）
 import numpy as np  # 用于数值计算（如处理NaN值、数学运算）
 from collections import deque  # 用于创建固定长度的队列（缓存K线数据）
-
+from order_executor import place_order, check_stop_orders
 from order_executor import place_order
 from config_account import DEFAULT_ORDER_QTY, SYMBOL
 
@@ -645,6 +645,8 @@ def monitor():
         # ===== ATR总风控（最终拦截）
         if "禁止交易" in trade_status:
             entry_signal = "⛔ ATR风控：禁止交易"
+
+
         # ===============================
         # ✅ 调用统一下单函数
         # ===============================
@@ -654,12 +656,28 @@ def monitor():
 
         # 实盘/测试盘统一下单
         if entry_signal in ["追多", "向上剃头皮"]:
-            success = place_order(SYMBOL, "BUY", DEFAULT_ORDER_QTY)
+            success = place_order(
+                symbol=SYMBOL,
+                side="BUY",
+                quantity=DEFAULT_ORDER_QTY,
+                order_type="SCALPING" if "剃头皮" in entry_signal else "NORMAL",
+                scalping_range=(scalp_low, scalp_high) if "剃头皮" in entry_signal else None,
+                stop_loss=stop_loss_value,
+                take_profit=take_profit_value
+            )
             if success:
                 order_status = "已下多单"
 
         elif entry_signal in ["追空", "向下剃头皮"]:
-            success = place_order(SYMBOL, "SELL", DEFAULT_ORDER_QTY)
+            success = place_order(
+                symbol=SYMBOL,
+                side="SELL",
+                quantity=DEFAULT_ORDER_QTY,
+                order_type="SCALPING" if "剃头皮" in entry_signal else "NORMAL",
+                scalping_range=(scalp_low, scalp_high) if "剃头皮" in entry_signal else None,
+                stop_loss=stop_loss_value,
+                take_profit=take_profit_value
+            )
             if success:
                 order_status = "已下空单"
 
@@ -760,6 +778,7 @@ def main():
     init_klines()  # 初始化历史K线数据
     start_ws()  # 启动WebSocket实时数据
     monitor()  # 启动监控和策略分析
+    check_stop_orders()  # 自动检查所有订单的止盈/止损
 
 
 # 程序入口：只有直接运行时才执行main函数
