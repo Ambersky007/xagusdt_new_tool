@@ -4,17 +4,22 @@
 # ===============================
 
 import requests  # 用于发送HTTP请求
-import time      # 时间戳与延时控制
-import hmac      # HMAC签名
-import hashlib   # SHA256
+import time  # 时间戳与延时控制
+import hmac  # HMAC签名
+import hashlib  # SHA256
 from config_account import TRADE_MODE, REAL_ACCOUNT, TEST_ACCOUNT  # 获取账户信息
-import time
+from price_center import get_price
+from config_account import (
+    API_KEY, API_SECRET, SYMBOL,
+    CURRENT_CONFIG, BASE_URL  # 导入BASE_URL和其他配置
+)
 
 # 全局订单列表，用于止盈止损监控
 order_list = []
 
 # 默认滑点设置（0.01‰）
-DEFAULT_SLIPPAGE = 0.0001
+DEFAULT_SLIPPAGE = 0.0001  # 这个滑点就是0.1usdt
+
 
 def get_account():
     """
@@ -22,12 +27,6 @@ def get_account():
     """
     return TEST_ACCOUNT if TRADE_MODE == "TEST" else REAL_ACCOUNT
 
-def get_market_price(symbol):
-    """
-    获取当前市场价格
-    TODO: 可改为 WS/HTTP 获取实时价格
-    """
-    return 70.0  # 临时返回一个固定价格用于测试
 
 def place_order(symbol, side, quantity, price=None, order_type="NORMAL",
                 scalping_range=None, stop_loss=None, take_profit=None,
@@ -57,13 +56,13 @@ def place_order(symbol, side, quantity, price=None, order_type="NORMAL",
     # -----------------------------
     # 滑点控制
     # -----------------------------
-    market_price = get_market_price(symbol)  # 当前市场价格
+    market_price = get_price()  # 当前市场价格
     if price:
         if side == "BUY" and price > market_price * (1 + slippage):
-            print(f"⚠️ 买入价格超滑点限制 {price} > {market_price*(1+slippage)}")
+            print(f"⚠️ 买入价格超滑点限制 {price} > {market_price * (1 + slippage)}")
             return None
         elif side == "SELL" and price < market_price * (1 - slippage):
-            print(f"⚠️ 卖出价格超滑点限制 {price} < {market_price*(1-slippage)}")
+            print(f"⚠️ 卖出价格超滑点限制 {price} < {market_price * (1 - slippage)}")
             return None
     else:
         price = market_price  # 如果没指定价格，直接用市价
@@ -123,24 +122,30 @@ def place_order(symbol, side, quantity, price=None, order_type="NORMAL",
         print("❌ 下单失败:", e)
         return None
 
-def check_stop_orders():
+
+# 修复：添加 symbol 参数，适配主程序调用
+def check_stop_orders(symbol):
     """
     遍历全局订单列表，触发止盈止损
     支持剃头皮止盈回落和平仓逻辑
+    symbol: 交易对（如 XAGUSDT）
     """
     global order_list
     to_remove = []
 
     for order in order_list:
-        symbol = order["symbol"]
+        # 只处理指定交易对的订单
+        if order["symbol"] != symbol:
+            continue
+
         side = order["side"]
-        price = get_market_price(symbol)
+        price = get_price()
 
         # 计算浮动盈利
         if side == "BUY":
-            profit = price - order["price"]
+            profit = price - order["price"] if price else 0
         else:
-            profit = order["price"] - price
+            profit = order["price"] - price if price else 0
 
         # 更新最大浮动盈利
         if profit > order["max_profit"]:
@@ -154,24 +159,24 @@ def check_stop_orders():
             # 向上剃头皮做多
             if side == "BUY":
                 # 止盈：盈利>=0.05%且回落到最大盈利的80%
-                if profit >= 0.0005*order["price"] and profit <= order["max_profit"]*0.8:
+                if profit >= 0.0005 * order["price"] and profit <= order["max_profit"] * 0.8:
                     print(f"🎯 向上剃头皮止盈回落, 平仓 {symbol}")
                     place_order(symbol, "SELL", order["qty"])
                     to_remove.append(order)
                 # 止损：价格 < 区间低点立即平仓
-                elif price <= low:
+                elif price and price <= low:
                     print(f"⚠️ 向上剃头皮止损触发, 平仓 {symbol}")
                     place_order(symbol, "SELL", order["qty"])
                     to_remove.append(order)
             # 向下剃头皮做空
             elif side == "SELL":
                 # 止盈：盈利>=0.05%且回落到最大盈利的80%
-                if profit >= 0.0005*order["price"] and profit <= order["max_profit"]*0.8:
+                if profit >= 0.0005 * order["price"] and profit <= order["max_profit"] * 0.8:
                     print(f"🎯 向下剃头皮止盈回落, 平仓 {symbol}")
                     place_order(symbol, "BUY", order["qty"])
                     to_remove.append(order)
                 # 止损：价格 > 区间高点立即平仓
-                elif price >= high:
+                elif price and price >= high:
                     print(f"⚠️ 向下剃头皮止损触发, 平仓 {symbol}")
                     place_order(symbol, "BUY", order["qty"])
                     to_remove.append(order)
@@ -182,23 +187,23 @@ def check_stop_orders():
         if order["order_type"] == "NORMAL":
             # 多头追多
             if side == "BUY":
-                if profit >= 0.0005*order["price"] and profit <= order["max_profit"]*0.8:
+                if profit >= 0.0005 * order["price"] and profit <= order["max_profit"] * 0.8:
                     print(f"🎯 追多止盈回落, 平仓 {symbol}")
                     place_order(symbol, "SELL", order["qty"])
                     to_remove.append(order)
                 # 止损：价格 < 下单价 - 0.7
-                elif price <= order["price"] - 0.7:
+                elif price and price <= order["price"] - 0.7:
                     print(f"⚠️ 追多止损触发, 平仓 {symbol}")
                     place_order(symbol, "SELL", order["qty"])
                     to_remove.append(order)
             # 空头追空
             elif side == "SELL":
-                if profit >= 0.0005*order["price"] and profit <= order["max_profit"]*0.8:
+                if profit >= 0.0005 * order["price"] and profit <= order["max_profit"] * 0.8:
                     print(f"🎯 追空止盈回落, 平仓 {symbol}")
                     place_order(symbol, "BUY", order["qty"])
                     to_remove.append(order)
                 # 止损：价格 > 下单价 + 0.7
-                elif price >= order["price"] + 0.7:
+                elif price and price >= order["price"] + 0.7:
                     print(f"⚠️ 追空止损触发, 平仓 {symbol}")
                     place_order(symbol, "BUY", order["qty"])
                     to_remove.append(order)
@@ -208,3 +213,62 @@ def check_stop_orders():
     # -----------------------------
     for o in to_remove:
         order_list.remove(o)
+
+    # 新增：打印检查结果
+    if to_remove:
+        print(f"ℹ️ {symbol} 本次触发 {len(to_remove)} 笔止盈止损单")
+    else:
+        print(f"ℹ️ {symbol} 暂无需要触发的止盈止损单")
+
+
+# 优化：适配主程序的持仓判断逻辑，返回布尔值+详细信息
+def get_position(symbol):
+    """
+    获取持仓信息
+    :return:
+        True/False = 是否有持仓（主程序判断用）
+        同时打印详细持仓信息（多/空/数量）
+    """
+    try:
+        endpoint = "/fapi/v2/positionRisk"
+        timestamp = int(time.time() * 1000)
+
+        query_string = f"timestamp={timestamp}"
+        signature = hmac.new(
+            API_SECRET.encode(),
+            query_string.encode(),
+            hashlib.sha256
+        ).hexdigest()
+
+        url = f"{BASE_URL}{endpoint}?{query_string}&signature={signature}"
+
+        headers = {
+            "X-MBX-APIKEY": API_KEY
+        }
+
+        response = requests.get(url, headers=headers, timeout=5)
+        data = response.json()
+
+        # 处理API返回错误的情况
+        if "code" in data and data["code"] != 200:
+            print(f"❌ 持仓查询API错误: {data['msg']}")
+            return False
+
+        for pos in data:
+            if pos["symbol"] == symbol:
+                amt = float(pos["positionAmt"])
+
+                if amt > 0:
+                    print(f"✅ 检测到 {symbol} 多头持仓，数量：{amt}")
+                    return True  # 有持仓返回True
+                elif amt < 0:
+                    print(f"✅ 检测到 {symbol} 空头持仓，数量：{abs(amt)}")
+                    return True  # 有持仓返回True
+
+        # 无持仓
+        print(f"❌ 未检测到 {symbol} 任何持仓")
+        return False
+
+    except Exception as e:
+        print(f"❌ 查询持仓失败: {e}")
+        return False  # 异常时返回False，避免主程序卡死

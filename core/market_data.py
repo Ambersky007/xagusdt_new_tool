@@ -18,6 +18,7 @@ import json           # JSON解析库：解析API/WS返回的JSON数据
 import threading      # 多线程库：让WebSocket在后台独立线程运行，不阻塞主线程
 import time           # 时间控制库：用于休眠、时间戳处理（备用）
 from collections import deque  # 固定长度队列：缓存K线数据，自动淘汰旧数据
+from price_center import update_ws_price
 import pyttsx3  # 语音播报
 import queue
 
@@ -191,10 +192,10 @@ def on_message(ws, message):
 
     with lock:
         if data.get("e") == "aggTrade":
-            cache["price"] = float(data["p"])
+            update_ws_price(float(data["p"]))
         elif data.get("e") == "markPriceUpdate":
             if cache["price"] is None:
-                cache["price"] = float(data["p"])
+                update_ws_price(float(data["p"]))
         elif data.get("e") == "depthUpdate":
             cache["depth"] = data
         elif data.get("e") == "kline":
