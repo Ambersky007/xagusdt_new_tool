@@ -8,6 +8,7 @@ import time      # 时间戳与延时控制
 import hmac      # HMAC签名
 import hashlib   # SHA256
 from config_account import TRADE_MODE, REAL_ACCOUNT, TEST_ACCOUNT  # 获取账户信息
+import time
 
 # 全局订单列表，用于止盈止损监控
 order_list = []
