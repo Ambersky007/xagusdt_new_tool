@@ -30,7 +30,9 @@ def get_account():
 
 def place_order(symbol, side, quantity, price=None, order_type="NORMAL",
                 scalping_range=None, stop_loss=None, take_profit=None,
-                slippage=DEFAULT_SLIPPAGE):
+                slippage=DEFAULT_SLIPPAGE,
+                real_order_type="MARKET",  # 新增：真正下单类型
+                reduce_only=False):        # 新增：平仓标记
     """
     下单函数（市价单/限价单）
     side: "BUY" 或 "SELL"
@@ -76,11 +78,12 @@ def place_order(symbol, side, quantity, price=None, order_type="NORMAL",
     data = {
         "symbol": symbol,
         "side": side,
-        "type": "MARKET" if price is None else "LIMIT",
+        "type": real_order_type,  # ⭐ 使用外部传入的类型
         "quantity": quantity,
-        "timestamp": int(time.time() * 1000)
+        "timestamp": int(time.time() * 1000),
+        "reduceOnly": "true" if reduce_only else "false"  # ⭐ 添加 reduceOnly
     }
-    if price:
+    if price and real_order_type == "LIMIT":
         data["price"] = price
         data["timeInForce"] = "GTC"
 
@@ -161,24 +164,34 @@ def check_stop_orders(symbol):
                 # 止盈：盈利>=0.05%且回落到最大盈利的80%
                 if profit >= 0.0005 * order["price"] and profit <= order["max_profit"] * 0.8:
                     print(f"🎯 向上剃头皮止盈回落, 平仓 {symbol}")
-                    place_order(symbol, "SELL", order["qty"])
+                    place_order(symbol, "SELL", order["qty"],
+                                real_order_type="MARKET",
+                                reduce_only=True)
                     to_remove.append(order)
                 # 止损：价格 < 区间低点立即平仓
                 elif price and price <= low:
                     print(f"⚠️ 向上剃头皮止损触发, 平仓 {symbol}")
-                    place_order(symbol, "SELL", order["qty"])
+                    place_order(symbol, "SELL", order["qty"],
+                                real_order_type="MARKET",
+                                reduce_only=True)
                     to_remove.append(order)
             # 向下剃头皮做空
             elif side == "SELL":
                 # 止盈：盈利>=0.05%且回落到最大盈利的80%
                 if profit >= 0.0005 * order["price"] and profit <= order["max_profit"] * 0.8:
                     print(f"🎯 向下剃头皮止盈回落, 平仓 {symbol}")
-                    place_order(symbol, "BUY", order["qty"])
+                    # 修复点1：空头平仓用 BUY
+                    place_order(symbol, "BUY", order["qty"],
+                                real_order_type="MARKET",
+                                reduce_only=True)
                     to_remove.append(order)
                 # 止损：价格 > 区间高点立即平仓
                 elif price and price >= high:
                     print(f"⚠️ 向下剃头皮止损触发, 平仓 {symbol}")
-                    place_order(symbol, "BUY", order["qty"])
+                    # 修复点2：空头止损平仓用 BUY
+                    place_order(symbol, "BUY", order["qty"],
+                                real_order_type="MARKET",
+                                reduce_only=True)
                     to_remove.append(order)
 
         # -----------------------------
@@ -189,23 +202,33 @@ def check_stop_orders(symbol):
             if side == "BUY":
                 if profit >= 0.0005 * order["price"] and profit <= order["max_profit"] * 0.8:
                     print(f"🎯 追多止盈回落, 平仓 {symbol}")
-                    place_order(symbol, "SELL", order["qty"])
+                    place_order(symbol, "SELL", order["qty"],
+                                real_order_type="MARKET",
+                                reduce_only=True)
                     to_remove.append(order)
                 # 止损：价格 < 下单价 - 0.7
                 elif price and price <= order["price"] - 0.7:
                     print(f"⚠️ 追多止损触发, 平仓 {symbol}")
-                    place_order(symbol, "SELL", order["qty"])
+                    place_order(symbol, "SELL", order["qty"],
+                                real_order_type="MARKET",
+                                reduce_only=True)
                     to_remove.append(order)
             # 空头追空
             elif side == "SELL":
                 if profit >= 0.0005 * order["price"] and profit <= order["max_profit"] * 0.8:
                     print(f"🎯 追空止盈回落, 平仓 {symbol}")
-                    place_order(symbol, "BUY", order["qty"])
+                    # 修复点3：追空止盈平仓用 BUY
+                    place_order(symbol, "BUY", order["qty"],
+                                real_order_type="MARKET",
+                                reduce_only=True)
                     to_remove.append(order)
                 # 止损：价格 > 下单价 + 0.7
                 elif price and price >= order["price"] + 0.7:
                     print(f"⚠️ 追空止损触发, 平仓 {symbol}")
-                    place_order(symbol, "BUY", order["qty"])
+                    # 修复点4：追空止损平仓用 BUY
+                    place_order(symbol, "BUY", order["qty"],
+                                real_order_type="MARKET",
+                                reduce_only=True)
                     to_remove.append(order)
 
     # -----------------------------
@@ -224,10 +247,9 @@ def check_stop_orders(symbol):
 # 优化：适配主程序的持仓判断逻辑，返回布尔值+详细信息
 def get_position(symbol):
     """
-    获取持仓信息
-    :return:
-        True/False = 是否有持仓（主程序判断用）
-        同时打印详细持仓信息（多/空/数量）
+    获取持仓方向
+    return:
+        "LONG" / "SHORT" / None
     """
     try:
         endpoint = "/fapi/v2/positionRisk"
@@ -249,26 +271,25 @@ def get_position(symbol):
         response = requests.get(url, headers=headers, timeout=5)
         data = response.json()
 
-        # 处理API返回错误的情况
-        if "code" in data and data["code"] != 200:
-            print(f"❌ 持仓查询API错误: {data['msg']}")
-            return False
+        # API错误处理
+        if isinstance(data, dict) and "code" in data:
+            print(f"❌ 持仓查询API错误: {data.get('msg')}")
+            return None
 
         for pos in data:
             if pos["symbol"] == symbol:
                 amt = float(pos["positionAmt"])
 
                 if amt > 0:
-                    print(f"✅ 检测到 {symbol} 多头持仓，数量：{amt}")
-                    return True  # 有持仓返回True
+                    print(f"✅ {symbol} 多头持仓: {amt}")
+                    return "LONG"
                 elif amt < 0:
-                    print(f"✅ 检测到 {symbol} 空头持仓，数量：{abs(amt)}")
-                    return True  # 有持仓返回True
+                    print(f"✅ {symbol} 空头持仓: {abs(amt)}")
+                    return "SHORT"
 
-        # 无持仓
-        print(f"❌ 未检测到 {symbol} 任何持仓")
-        return False
+        print(f"❌ {symbol} 无持仓")
+        return None
 
     except Exception as e:
         print(f"❌ 查询持仓失败: {e}")
-        return False  # 异常时返回False，避免主程序卡死
+        return None
