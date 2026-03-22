@@ -28,41 +28,41 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "ModuleVcsDetector.initialDetectionPerformed": "true",
-    "Python.account_config.executor": "Run",
-    "Python.binance_data.executor": "Run",
-    "Python.binance_ws.executor": "Run",
-    "Python.binance_ws.py (1).executor": "Run",
-    "Python.binance_ws.py.executor": "Run",
-    "Python.ceshi.executor": "Run",
-    "Python.config.executor": "Run",
-    "Python.core_model.executor": "Run",
-    "Python.main.executor": "Run",
-    "Python.main_engine (1).executor": "Run",
-    "Python.main_engine.executor": "Run",
-    "Python.main_engine.py (1).executor": "Run",
-    "Python.market_data.executor": "Run",
-    "Python.multi_timeframe.executor": "Run",
-    "Python.my_by_sw.executor": "Run",
-    "Python.order_executor.executor": "Run",
-    "Python.orderbook.executor": "Run",
-    "Python.risk_control.executor": "Run",
-    "Python.signal_router.executor": "Run",
-    "Python.storage.executor": "Run",
-    "Python.trend.executor": "Run",
-    "Python.volatility.executor": "Run",
-    "Python.websocket.executor": "Run",
-    "Python.websocket_config.executor": "Run",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
-    "RunOnceActivity.typescript.service.memoryLimit.init": "true",
-    "git-widget-placeholder": "master",
-    "settings.editor.selected.configurable": "com.intellij.pycharm.community.ide.impl.configuration.PythonContentEntriesConfigurable",
-    "vue.rearranger.settings.migration": "true"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
+    &quot;Python.account_config.executor&quot;: &quot;Run&quot;,
+    &quot;Python.binance_data.executor&quot;: &quot;Run&quot;,
+    &quot;Python.binance_ws.executor&quot;: &quot;Run&quot;,
+    &quot;Python.binance_ws.py (1).executor&quot;: &quot;Run&quot;,
+    &quot;Python.binance_ws.py.executor&quot;: &quot;Run&quot;,
+    &quot;Python.ceshi.executor&quot;: &quot;Run&quot;,
+    &quot;Python.config.executor&quot;: &quot;Run&quot;,
+    &quot;Python.core_model.executor&quot;: &quot;Run&quot;,
+    &quot;Python.main.executor&quot;: &quot;Run&quot;,
+    &quot;Python.main_engine (1).executor&quot;: &quot;Run&quot;,
+    &quot;Python.main_engine.executor&quot;: &quot;Run&quot;,
+    &quot;Python.main_engine.py (1).executor&quot;: &quot;Run&quot;,
+    &quot;Python.market_data.executor&quot;: &quot;Run&quot;,
+    &quot;Python.multi_timeframe.executor&quot;: &quot;Run&quot;,
+    &quot;Python.my_by_sw.executor&quot;: &quot;Run&quot;,
+    &quot;Python.order_executor.executor&quot;: &quot;Run&quot;,
+    &quot;Python.orderbook.executor&quot;: &quot;Run&quot;,
+    &quot;Python.risk_control.executor&quot;: &quot;Run&quot;,
+    &quot;Python.signal_router.executor&quot;: &quot;Run&quot;,
+    &quot;Python.storage.executor&quot;: &quot;Run&quot;,
+    &quot;Python.trend.executor&quot;: &quot;Run&quot;,
+    &quot;Python.volatility.executor&quot;: &quot;Run&quot;,
+    &quot;Python.websocket.executor&quot;: &quot;Run&quot;,
+    &quot;Python.websocket_config.executor&quot;: &quot;Run&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.typescript.service.memoryLimit.init&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;master&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;com.intellij.pycharm.community.ide.impl.configuration.PythonContentEntriesConfigurable&quot;,
+    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
   }
-}]]></component>
+}</component>
   <component name="RecentsManager">
     <key name="MoveFile.RECENT_KEYS">
       <recent name="F:\PythonProject\analysis_engine" />
@@ -291,7 +291,7 @@
       <workItem from="1773231775757" duration="3052000" />
       <workItem from="1773234878895" duration="3007000" />
       <workItem from="1773500803283" duration="6959000" />
-      <workItem from="1773622979537" duration="54691000" />
+      <workItem from="1773622979537" duration="65145000" />
     </task>
     <servers />
   </component>
@@ -334,7 +334,7 @@
     <SUITE FILE_PATH="coverage/BinanceAG_LH$binance_ws_py__1_.coverage" NAME="binance_ws.py (1) Coverage Results" MODIFIED="1773986860069" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/BinanceAG_LH$storage.coverage" NAME="storage Coverage Results" MODIFIED="1773504774878" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/data_engine" />
     <SUITE FILE_PATH="coverage/BinanceAG_LH$trend.coverage" NAME="trend Coverage Results" MODIFIED="1773504819933" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/indicator_engine" />
-    <SUITE FILE_PATH="coverage/BinanceAG_LH$main_engine__1_.coverage" NAME="main_engine (1) Coverage Results" MODIFIED="1774095204137" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/BinanceAG_LH$main_engine__1_.coverage" NAME="main_engine (1) Coverage Results" MODIFIED="1774147418237" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/BinanceAG_LH$market_data.coverage" NAME="market_data Coverage Results" MODIFIED="1774010571195" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/core" />
   </component>
 </project>
