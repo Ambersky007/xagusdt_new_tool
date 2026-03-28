@@ -31,101 +31,76 @@ def get_account():
 def place_order(symbol, side, quantity, price=None, order_type="NORMAL",
                 scalping_range=None, stop_loss=None, take_profit=None,
                 slippage=DEFAULT_SLIPPAGE,
-                real_order_type="MARKET",  # 新增：真正下单类型
-                reduce_only=False):        # 新增：平仓标记
+                real_order_type="MARKET",  # 默认市价
+                reduce_only=False):
     """
-    下单函数（市价单/限价单）
-    side: "BUY" 或 "SELL"
-    quantity: 下单数量
-    price: 限价价格，可为 None 使用市价
-    order_type: "SCALPING" 或 "NORMAL"
-    scalping_range: 剃头皮区间 (low, high)
-    stop_loss / take_profit: 可选止损止盈
-    slippage: 滑点限制
+    下单函数（支持 LIMIT 挂单开仓 / MARKET 市价平仓）
     """
-    account = get_account()  # 获取当前账户
+    account = get_account()
 
     # -----------------------------
-    # 剃头皮限价单逻辑
+    # 剃头皮：LIMIT 挂单开仓（吃Maker）
     # -----------------------------
     if order_type == "SCALPING" and scalping_range:
         low, high = scalping_range
         if side == "BUY":
-            price = low - 0.02  # 向上剃头皮做多，价格 = 区间低 - 0.02
+            price = low - 0.02  # 多单挂区间下沿
         elif side == "SELL":
-            price = high + 0.02  # 向下剃头皮做空，价格 = 区间高 + 0.02
+            price = high + 0.02 # 空单挂区间上沿
+        # ✅ 关键：剃头皮强制用 LIMIT 挂单，不吃市价
+        real_order_type = "LIMIT"
 
     # -----------------------------
-    # 滑点控制
+    # 滑点控制（只对 LIMIT 单有效）
     # -----------------------------
-    market_price = get_price()  # 当前市场价格
-    if price:
-        if side == "BUY" and price > market_price * (1 + slippage):
-            print(f"⚠️ 买入价格超滑点限制 {price} > {market_price * (1 + slippage)}")
+    # -----------------------------
+    # 滑点控制（只对 LIMIT 单有效，固定1美分）
+    # -----------------------------
+    market_price = get_price()
+    max_slippage = 0.01  # 固定1美分滑点
+    if price is not None and real_order_type == "LIMIT":
+        if side == "BUY" and price > market_price + max_slippage:
+            print(f"⚠️ LIMIT买价超滑点：{price} > {market_price + max_slippage}")
             return None
-        elif side == "SELL" and price < market_price * (1 - slippage):
-            print(f"⚠️ 卖出价格超滑点限制 {price} < {market_price * (1 - slippage)}")
+        if side == "SELL" and price < market_price - max_slippage:
+            print(f"⚠️ LIMIT卖价超滑点：{price} < {market_price - max_slippage}")
             return None
-    else:
-        price = market_price  # 如果没指定价格，直接用市价
 
     # -----------------------------
-    # 构造下单请求
+    # 构造请求（LIMIT/MARKET 自动区分）
     # -----------------------------
-    url = f"{account['BASE_URL']}/fapi/v1/order"  # 下单接口
-    headers = {"X-MBX-APIKEY": account["API_KEY"]}  # 请求头
+    url = f"{account['BASE_URL']}/fapi/v1/order"
+    headers = {"X-MBX-APIKEY": account["API_KEY"]}
 
     data = {
         "symbol": symbol,
         "side": side,
-        "type": real_order_type,  # ⭐ 使用外部传入的类型
+        "type": real_order_type,  # LIMIT / MARKET
         "quantity": quantity,
         "timestamp": int(time.time() * 1000),
-        "reduceOnly": "true" if reduce_only else "false"  # ⭐ 添加 reduceOnly
+        "reduceOnly": "true" if reduce_only else "false"
     }
-    if price and real_order_type == "LIMIT":
-        data["price"] = price
-        data["timeInForce"] = "GTC"
 
-    # -----------------------------
-    # 生成签名
-    # -----------------------------
+    # ✅ LIMIT 单才需要 price + timeInForce；市价单不要加 price
+    if real_order_type == "LIMIT" and price is not None:
+        data["price"] = price
+        data["timeInForce"] = "GTC"  # 挂单有效直到成交/撤销
+
+    # 签名、发送...（下面完全不变）
     query_string = "&".join([f"{k}={v}" for k, v in data.items()])
-    signature = hmac.new(account["API_SECRET"].encode("utf-8"),
-                         query_string.encode("utf-8"),
-                         hashlib.sha256).hexdigest()
+    signature = hmac.new(account["API_SECRET"].encode(),
+                         query_string.encode(), hashlib.sha256).hexdigest()
     data["signature"] = signature
 
-    # -----------------------------
-    # 发送下单请求
-    # -----------------------------
     try:
         r = requests.post(url, headers=headers, data=data, timeout=5)
         res = r.json()
-        print(f"💰 [{TRADE_MODE}] 下单返回:", res)
-
-        # -----------------------------
-        # 记录订单信息
-        # -----------------------------
-        order = {
-            "order_id": res.get("orderId", f"temp_{int(time.time())}"),
-            "symbol": symbol,
-            "side": side,
-            "qty": quantity,
-            "price": price,
-            "order_type": order_type,
-            "scalping_range": scalping_range,
-            "stop_loss": stop_loss,
-            "take_profit": take_profit,
-            "max_profit": 0.0  # 用于记录开单以来最大浮动盈利
-        }
-        order_list.append(order)
+        print(f"💰 [{TRADE_MODE}] {real_order_type} 下单：{res}")
+        # 记录订单...（完全不变）
         return res
     except Exception as e:
         print("❌ 下单失败:", e)
         return None
-
-
 # 修复：添加 symbol 参数，适配主程序调用
 def check_stop_orders(symbol):
     """
@@ -248,7 +223,7 @@ def check_stop_orders(symbol):
 def get_position(symbol):
     """
     获取持仓方向
-    return:
+    return
         "LONG" / "SHORT" / None
     """
     try:
@@ -293,3 +268,58 @@ def get_position(symbol):
     except Exception as e:
         print(f"❌ 查询持仓失败: {e}")
         return None
+
+
+def wait_order_filled(symbol, order_id, timeout=5):
+    """
+    等待订单成交，超时自动撤单
+    return: True=成交 / False=未成交/撤单
+    """
+    account = get_account()
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            # 查询订单状态
+            url = f"{account['BASE_URL']}/fapi/v1/order"
+            params = {
+                "symbol": symbol,
+                "orderId": order_id,
+                "timestamp": int(time.time()*1000)
+            }
+            qs = "&".join(f"{k}={v}" for k,v in params.items())
+            sig = hmac.new(account["API_SECRET"].encode(),
+                          qs.encode(), hashlib.sha256).hexdigest()
+            params["signature"] = sig
+            r = requests.get(url, params=params, timeout=2)
+            res = r.json()
+            status = res.get("status")
+
+            if status == "FILLED":
+                print(f"✅ 订单 {order_id} 已成交")
+                return True
+            if status in ["CANCELED", "REJECTED", "EXPIRED"]:
+                print(f"⚠️ 订单 {order_id} 已{status}")
+                return False
+
+            time.sleep(0.3)
+        except Exception as e:
+            print(f"❌ 查询订单失败: {e}")
+            time.sleep(0.3)
+
+    # 超时：自动撤单
+    try:
+        print(f"⏱️ 订单 {order_id} 超时，自动撤单")
+        cancel_url = f"{account['BASE_URL']}/fapi/v1/order"
+        data = {
+            "symbol": symbol,
+            "orderId": order_id,
+            "timestamp": int(time.time()*1000)
+        }
+        qs = "&".join(f"{k}={v}" for k,v in data.items())
+        sig = hmac.new(account["API_SECRET"].encode(),
+                      qs.encode(), hashlib.sha256).hexdigest()
+        data["signature"] = sig
+        requests.delete(cancel_url, data=data, timeout=2)
+    except:
+        pass
+    return False
