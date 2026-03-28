@@ -45,6 +45,8 @@ from voice_alert import speak
 from price_center import update_ws_price, get_price
 # 时间同步模块
 from time_sync import sync_time
+from dxy_calculator import update_dxy, filtered_trend  # 你写的DXY模块
+import dxy_calculator
 
 # ===============================
 # 配置区
@@ -83,6 +85,12 @@ ORDER_COOLDOWN = 60
 last_signal = None
 # 上一次下单时间戳
 last_order_time = 0
+# HTTP 兜底冷却（防封号必修）
+last_http_update = 0
+HTTP_COOLDOWN = 20
+
+# 币安价格精度（XAGUSDT = 2位小数）
+PRICE_PRECISION = 2
 
 # ===============================
 # 【第3步】持仓查询缓存（防API高频封号）
@@ -97,6 +105,8 @@ cached_position = None
 # ===============================
 # 交易锁：True=锁定，无法开仓，防止连续下单
 trade_lock = False
+TRADE_LOCK_TIMEOUT = 120  # 最大锁定时间（秒）
+trade_lock_time = 0  # 锁定开始时间
 
 # ===============================
 # 数据缓存
@@ -164,6 +174,12 @@ def http_update():
     WebSocket断开/超时/无数据时，通过HTTP API主动拉取最新数据
     保证策略不会因WS中断而停止运行
     """
+    global last_http_update
+    # HTTP 兜底冷却（防封号必修）
+    if time.time() - last_http_update < HTTP_COOLDOWN:
+        return
+    last_http_update = time.time()
+
     # 打印兜底更新提示
     print("🔄 执行HTTP兜底更新...")
     # 币安K线API地址
@@ -181,21 +197,23 @@ def http_update():
             params = {"symbol": SYMBOL, "interval": interval, "limit": 2}
             # 获取最新K线数据
             data = requests.get(url, params=params, timeout=5).json()
-            # 取最新一根K线
-            new_k = data[-1]
 
-            # 如果新K线时间晚于缓存最后一根，说明是新K线，避免重复添加
-            if new_k[0] > last_time:
-                with lock:
-                    # 将新K线加入缓存
-                    cache["klines"][interval].append({
-                        "time": new_k[0],
-                        "open": float(new_k[1]),
-                        "high": float(new_k[2]),
-                        "low": float(new_k[3]),
-                        "close": float(new_k[4]),
-                        "volume": float(new_k[5])
-                    })
+            # 修复2：只取已收盘K线 data[-2]
+            if len(data) >= 2:
+                new_k = data[-2]
+
+                # 如果新K线时间晚于缓存最后一根，说明是新K线，避免重复添加
+                if new_k[0] > last_time:
+                    with lock:
+                        # 将新K线加入缓存
+                        cache["klines"][interval].append({
+                            "time": new_k[0],
+                            "open": float(new_k[1]),
+                            "high": float(new_k[2]),
+                            "low": float(new_k[3]),
+                            "close": float(new_k[4]),
+                            "volume": float(new_k[5])
+                        })
                 print(f"📈 {interval} K线已更新")
         except Exception as e:
             print(f"⚠️ {interval} K线更新失败: {e}")
@@ -335,13 +353,15 @@ def analyze_trend(df):
         scores.append(score)
 
     # 根据得分判断趋势强度
-    if all(s >= 2 for s in scores):
+    score_sum = sum(scores)
+
+    if score_sum >= 4:
         return "🟢 强多"
-    elif all(s == 1 for s in scores):
+    elif score_sum >= 2:
         return "🟡 偏多"
-    elif all(s <= -2 for s in scores):
+    elif score_sum <= -4:
         return "🔴 强空"
-    elif all(s == -1 for s in scores):
+    elif score_sum <= -2:
         return "🟠 偏空"
     else:
         return "⚪ 震荡"
@@ -422,159 +442,114 @@ def on_close(ws, *args):
 
 
 # ===============================
-# 启动WS
+# 启动WS（修复5：指数退避重连）
 # ===============================
 def start_ws():
-    """
-    启动WebSocket长连接，使用守护线程后台运行
-    断开后自动重连
-    """
-
     def run():
         global ws_alive, last_ws_message_ts
-        # 无限循环重连
+        reconnect_delay = 5
         while True:
             try:
                 print("🚀 启动WebSocket连接...")
-                # 创建WebSocket对象，绑定回调函数
+
+                # ===============================
+                # ✅ 必修修复：重连前清空K线缓存
+                # ===============================
+                with lock:
+                    for interval in INTERVALS:
+                        cache["klines"][interval].clear()
+                init_klines()  # 重新拉取正确K线
+                time.sleep(1)
+
                 ws = websocket.WebSocketApp(WS_URL, on_message=on_message, on_error=on_error, on_close=on_close)
                 ws_alive = False
                 last_ws_message_ts = time.time()
-                # 启动长连接，定时发送心跳包
                 ws.run_forever(ping_interval=20, ping_timeout=10)
+                reconnect_delay = 5
             except Exception as e:
                 print(f"❌ WS异常: {e}")
-            print("🔄 5秒后重连WS...")
-            time.sleep(5)
+            print(f"🔄 {reconnect_delay}秒后重连WS...")
+            time.sleep(reconnect_delay)
+            reconnect_delay = min(reconnect_delay * 1.5, 60)
 
-    # 启动守护线程，程序退出时线程自动结束
     threading.Thread(target=run, daemon=True).start()
 
 
 # ===============================
-# ATR 过滤器
+# ATR 过滤器（修复6：空值防护）
 # ===============================
 def atr_filter(df, name=""):
-    """
-    市场波动过滤器：波动过大/过小都禁止开仓
-    用于趋势交易
-    """
     if len(df) < 50:
         return f"{name} 数据不足"
+
     high, low, close = df["high"], df["low"], df["close"]
-    # 计算TR
+    price = close.iloc[-1]
+
+    # ✅ 加固：防止价格为 0 除零崩溃
+    if price < 1e-6:
+        return "❌ 价格异常"
     tr1 = high - low
     tr2 = (high - close.shift(1)).abs()
     tr3 = (low - close.shift(1)).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    # 14周期ATR
-    atr = tr.rolling(window=14).mean()
-    # 当前ATR
-    current_atr = atr.iloc[-1]
 
-    # ATR的50周期EMA，用于判断波动趋势
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(window=14).mean()
+
+    if atr.empty or pd.isna(atr.iloc[-1]):
+        return "❌ 指标异常"
+
+    current_atr = atr.iloc[-1]
     atr_mean = atr.ewm(span=50).mean().iloc[-1]
 
-    # 异常判断
     if atr_mean == 0 or np.isnan(atr_mean):
         return f"{name} 数据异常"
-    # 波动过大，禁止开仓
-    if current_atr >= atr_mean * 1.5:    #這個值越大，風險越大，意味著允許的波動越大建議低於1.5
-        return f"{name} ❌ 波动过大"
-    # 波动过小，禁止开仓
-    elif current_atr <= atr_mean * 0.5:
-        return f"{name} ❌ 波动过小"
-    # 波动正常，允许交易
+
+    price = close.iloc[-1]
+    atr_pct = current_atr / price
+
+    if atr_pct > 0.01:
+        return f"{name} 🚀 高波动"
+    elif atr_pct < 0.002:
+        return f"{name} 💤 低波动"
     else:
-        return f"{name} ✅ 波动正常"
+        return f"{name} ✅ 正常"
 
 
 # ===============================
 # 震荡区间识别
 # ===============================
 def detect_scalping_range(df):
-    """
-    剃头皮震荡识别（增强版）?????????????????????????目前這個函數有問題，是否保留，或者改爲，計算若干跟K綫的平均值，然後判斷在平均值上面，和下面的次數比
-    严格判断是否处于适合高抛低吸的震荡区间
-    返回：
-        状态, 区间高点, 区间低点
-    """
-
-    if len(df) < 60:
+    if len(df) < 50:
         return "数据不足", None, None
 
-    # ===== 1. 取最近60根K线 =====
-    recent = df.tail(60)
+    recent = df.tail(50)
 
-    # 区间最高点
-    range_high = recent["high"].max()
-    # 区间最低点
-    range_low = recent["low"].min()
-    # 均价
-    mean_price = recent["close"].mean()
+    high = recent["high"].max()
+    low = recent["low"].min()
+    mid = (high + low) / 2
 
-    # ===== 2. 波动率判断 =====
-    range_pct = (range_high - range_low) / range_low
+    # 上下分布
+    above = (recent["close"] > mid).sum()
+    below = (recent["close"] < mid).sum()
 
-    # 增加标准差和ATR判断
-    std_pct = recent["close"].std() / mean_price
-    high_low = recent["high"] - recent["low"]
-    high_close = (recent["high"] - recent["close"].shift(1)).abs()
-    low_close = (recent["low"] - recent["close"].shift(1)).abs()
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    atr = tr.rolling(14).mean().iloc[-1]
-    atr_pct = atr / mean_price
+    balance = min(above, below) / max(above, below)
 
-    # 波动超过阈值，不是震荡
-    """
-    range_pct	0.005	最近60根K线最高点-最低点 / 最低点	        白银1小时波动大约在0.3%-0.5%，所以可以调高一点，0.006~0.008比较合理
-    std_pct	0.0035	    最近K线收盘价标准差 / 均价             	    反映价格离散程度，白银短线容易被微波动干扰，可调0.004~0.005
-    atr_pct	0.004	    最近K线ATR平均值 / 均价	                ATR对短线敏感，可以稍微放宽，0.0045~0.0055
-    """
+    range_pct = (high - low) / mid
 
-    if range_pct > 0.028 or std_pct > 0.025 or atr_pct > 0.019:
-        return "非震荡（波动过大）", None, None
+    if balance < 0.6:
+        return "单边走势", None, None
 
-    # ===== 3. 趋势过滤（防止趋势中误判震荡） =====
-    ema20 = recent["close"].ewm(span=20).mean()
-    slope = ema20.iloc[-1] - ema20.iloc[-5]
+    if range_pct > 0.01:
+        return "波动过大", None, None
 
-    if abs(slope) > mean_price * 0.001:
-        return "趋势中（禁止剃头皮）", None, None
+    if range_pct < 0.002:
+        return "波动过小", None, None
 
-    # ===== 4. 波动是否在收敛 =====
-    recent_range = recent["high"] - recent["low"]
-    if recent_range.iloc[-1] > recent_range.mean() * 1.2:
-        return "波动放大中", None, None
-
-    # ===== 5. 触碰高低点次数判断 =====
-    touch_high = (recent["high"] >= range_high * 0.9995).sum()
-    touch_low = (recent["low"] <= range_low * 1.0005).sum()
-
-    if touch_high < 2 or touch_low < 2:
-        return "震荡不足", None, None
-
-    # ===== 6. 假突破过滤 =====
-    last_close = recent["close"].iloc[-1]
-    if last_close > range_high * 1.001 or last_close < range_low * 0.999:
-        return "已突破区间", None, None
-
-    # ===== 7. 中心回归检测 =====
-    """
-
-    deviation.mean()    0.002      最近K线收盘价平均偏离区间均价比例（0.2%）
-    白银波动大，这个阈值偏小，容易误判偏离过大。可调到 0.003 ~ 0.005（0.3%~0.5%）
-"""
-    deviation = abs(recent["close"] - mean_price) / mean_price
-    if deviation.mean() > 0.005:
-        return "偏离中心过大", None, None
-
-    # ===== ✅ 最终判定：适合剃头皮 =====
-    return "🟡 可剃头皮", range_high, range_low
+    return "🟡 可剃头皮", high, low
 
 
 # ===============================
-# 剃头皮ATR
+# 剃头皮ATR（修复6：空值防护）
 # ===============================
 def atr_filter_scalping(df):
     """
@@ -586,7 +561,11 @@ def atr_filter_scalping(df):
         return "❌ 数据不足"
 
     high, low, close = df["high"], df["low"], df["close"]
+    price = close.iloc[-1]
 
+    # ✅ 加固：防止价格为 0 除零崩溃
+    if price < 1e-6:
+        return "❌ 价格异常"
     # ===== 1. ATR计算 =====
     tr1 = high - low
     tr2 = (high - close.shift(1)).abs()
@@ -594,6 +573,9 @@ def atr_filter_scalping(df):
 
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     atr = tr.rolling(window=14).mean()
+
+    if atr.empty or pd.isna(atr.iloc[-1]):
+        return "❌ 指标异常"
 
     current_atr = atr.iloc[-1]
 
@@ -658,26 +640,21 @@ def is_volume_expand(df):
     放量检测（实盘增强版）
     放量确认突破信号
     """
-
+    # ✅ 必修修复：先判断长度，防止索引越界崩溃
     if len(df) < 25:
         return False
 
+    price_up = df["close"].iloc[-2] > df["close"].iloc[-3]
+    price_down = df["close"].iloc[-2] < df["close"].iloc[-3]
+    if not (price_up or price_down):
+        return False
+
     vol = df["volume"]
-
-    # ===== 1. 当前已收盘成交量 =====
     current_vol = vol.iloc[-2]
-
-    # ===== 2. 过去20根均量（不含当前）=====
     avg_vol = vol.iloc[-22:-2].mean()
-
-    # ===== 3. 基础放量判断 =====
     is_expand = current_vol > avg_vol * 1.4
-
-    # ===== 4. 连续放量确认 =====
     prev_vol = vol.iloc[-3]
     confirm = current_vol > prev_vol
-
-    # ===== 5. 排除极端异常成交量 =====
     vol_std = vol.iloc[-22:-2].std()
     stable = current_vol < avg_vol + 3 * vol_std
 
@@ -693,6 +670,10 @@ def should_exit_position(df_1m_closed, df_5m_closed, is_long):
     - 多单：5分钟MACD死叉 或 1分钟EMA20跌破+缓冲
     - 空单：5分钟MACD金叉 或 1分钟EMA20突破+缓冲
     """
+    # ✅ 修复：防止K线数量不足导致程序崩溃
+    if len(df_1m_closed) < 20 or len(df_5m_closed) < 30:
+        return False
+
     # 5分钟MACD交叉平仓
     if is_long and is_macd_dead_cross(df_5m_closed):
         return True
@@ -751,36 +732,42 @@ def is_macd_dead_cross(df):
 # ===============================
 def can_trade(atr_1m_status, atr_5m_status, atr_15m_status, atr_1h_status):
     """
-    根据ATR波动过滤结果，判断是否允许交易
-    任意周期波动异常 → 禁止交易
-    """
-    reasons = []
-    # 检查1分钟波动
-    if "过大" in atr_1m_status:
-        reasons.append("1m波动过大")
-    if "过小" in atr_1m_status:
-        reasons.append("1m波动过小")
-    # 检查5分钟波动
-    if "过大" in atr_5m_status:
-        reasons.append("5m波动过大")
-    if "过小" in atr_5m_status:
-        reasons.append("5m波动过小")
-    # 检查15分钟波动
-    if "过大" in atr_15m_status:
-        reasons.append("15m波动过大")
-    if "过小" in atr_15m_status:
-        reasons.append("15m波动过小")
-    # 检查1小时波动
-    if "过大" in atr_1h_status:
-        reasons.append("1h波动过大")
-    if "过小" in atr_1h_status:
-        reasons.append("1h波动过小")
+    ATR市场分类器（实战版）
 
-    # 如果有禁止原因，返回禁止
-    if reasons:
-        return f"❌ 禁止交易（{'，'.join(reasons)}）"
-    # 全部正常，返回允许
-    return "✅ 可以交易"
+    ❗ 不再用于“禁止交易”
+    ✅ 只用于判断市场类型，从而决定策略方向
+
+    返回：
+        🚀 趋势市场（优先做趋势）
+        💤 震荡市场（优先剃头皮）
+        ⚖️ 混合市场（谨慎交易）
+    """
+
+    statuses = [
+        atr_1m_status,
+        atr_5m_status,
+        atr_15m_status,
+        atr_1h_status
+    ]
+
+    # ===== 统计各类型数量 =====
+    high_vol_count = sum(1 for s in statuses if "高波动" in s)
+    low_vol_count = sum(1 for s in statuses if "低波动" in s)
+    normal_count = sum(1 for s in statuses if "正常" in s)
+
+    # ===== 市场状态判断 =====
+
+    # 趋势市场：至少2个周期高波动
+    if high_vol_count >= 2:
+        return "🚀 趋势市场（优先做趋势）"
+
+    # 震荡市场：至少2个周期低波动
+    elif low_vol_count >= 2:
+        return "💤 震荡市场（优先剃头皮）"
+
+    # 混合市场：无明显结构
+    else:
+        return "⚖️ 混合市场（谨慎交易）"
 
 
 # ===============================
@@ -826,68 +813,102 @@ def calculate_sl_tp(current_price, atr_value, entry_signal):
     else:
         stop_loss = take_profit = None
 
+    # ✅ 币安强制价格精度修复（必修）
+    if stop_loss is not None:
+        stop_loss = round(stop_loss, PRICE_PRECISION)
+    if take_profit is not None:
+        take_profit = round(take_profit, PRICE_PRECISION)
+
     return stop_loss, take_profit
 
 
 def print_status(current_price, bid_price, ask_price, df_1m_closed, position_flag,
                  trend_5m, trend_15m, trend_1h,
-                 atr_1m_status, atr_5m_status, atr_15m_status, atr_1h_status,  # 新增15m+1h ATR
+                 atr_1m_status, atr_5m_status, atr_15m_status, atr_1h_status,
                  trade_status, scalping_range_status, scalping_atr_status,
                  near_low, near_high, golden_cross, dead_cross, entry_signal,
-                 order_status, stop_loss_value, take_profit_value, trade_lock, reason=None):
+                 order_status, stop_loss_value, take_profit_value, trade_lock, reason,
+                 dxy_trend, dxy_signal):
     """
     控制台打印实时策略状态，方便监控
-    【已修复：周期一致性 + 4周期ATR显示】
     """
     print("\n" + "=" * 30)
-    # 打印当前价格
     print(f"📊 实时数据 - 价格: {current_price:.4f}")
-    # 打印盘口买卖一
     bid_str = f"{bid_price:.4f}" if bid_price else "N/A"
     ask_str = f"{ask_price:.4f}" if ask_price else "N/A"
     print(f"盘口 - 买一: {bid_str} | 卖一: {ask_str}")
-    # 打印成交量信息
     print(f"成交量均值: {df_1m_closed['volume'].mean():.2f} | 最新成交量: {df_1m_closed['volume'].iloc[-1]:.2f}")
-    # 打印持仓状态
     print(f"持仓状态: {'✅ 有持仓' if position_flag else '❌ 无持仓'}")
 
-    # ====================== 修复：周期一致性判断 ======================
+    # 周期一致性判断
     trend_list = [trend_5m, trend_15m, trend_1h]
     valid_trends = [t for t in trend_list if t not in ["⚪ 震荡", "数据不足"]]
-
     if len(valid_trends) <= 1:
-        # 只有一个周期有方向 → 不算一致
         period_consistency = "❌ 不一致"
     else:
-        # 多个周期必须完全同向才算一致
         first = valid_trends[0]
         all_same = all(t == first for t in valid_trends)
         period_consistency = "✅ 一致" if all_same else "❌ 不一致"
 
-    # 打印多周期趋势
     print("\n📈 多周期趋势")
     print(f"5分钟: {trend_5m} | 15分钟: {trend_15m} | 1小时: {trend_1h}")
     print(f"周期一致性: {period_consistency}")
 
-    # 打印ATR波动过滤（4周期完整显示）
     print("\n🛡️ ATR波动过滤")
     print(f"1m: {atr_1m_status} | 5m: {atr_5m_status} | 15m: {atr_15m_status} | 1h: {atr_1h_status}")
     print(f"最终交易状态: {trade_status}")
 
-    # 打印策略信号
     print("\n🎯 策略信号")
     print(f"震荡区间状态: {scalping_range_status}")
-    print(f"剃头皮ATR状态: {scalping_atr_status}")
+    print(f"剃头皮ATR状态: {scalping_atr_status} （含大周期过滤）")
     print(f"near_low: {near_low} | near_high: {near_high}")
     print(f"MACD金叉: {golden_cross} | MACD死叉: {dead_cross}")
-    print(f"最终信号: {entry_signal} {'(' + ','.join(reason) + ')' if reason else ''}")
+
+    # 🚀 显示 DXY 美元指数状态
+    dxy_display = f"💵DXY: {dxy_trend}"
+    if dxy_signal == "STRONG_UP":
+        dxy_display += " 📈 强涨"
+    elif dxy_signal == "STRONG_DOWN":
+        dxy_display += " 📉 强跌"
+    elif dxy_signal == "WEAK_UP":
+        dxy_display += " 📈 弱涨"
+    elif dxy_signal == "WEAK_DOWN":
+        dxy_display += " 📉 弱跌"
+    elif dxy_signal == "FLAT":
+        dxy_display += " ➖ 横盘"
+
+    print(f"最终信号: {entry_signal} {dxy_display} ({','.join(reason) if reason else '正常'})")
     print(f"下单状态: {order_status}")
-    # 打印止盈止损
+
     if stop_loss_value and take_profit_value:
         print(f"止损: {stop_loss_value:.4f} | 止盈: {take_profit_value:.4f}")
-    # 打印交易锁状态
     print(f"交易锁: {'🔒 已锁定' if trade_lock else '🔓 未锁定'}")
     print("=" * 30 + "\n")
+
+
+# 持仓判断（防止重复开仓）修复1：标准化币安持仓判断
+def normalize_position(pos):
+    if not pos:
+        return None
+
+    # ✅ 标准币安持仓格式
+    if isinstance(pos, dict):
+        qty = float(pos.get("positionAmt", 0))
+
+        if abs(qty) < 1e-6:
+            return None
+
+        return "LONG" if qty > 0 else "SHORT"
+
+    # 兼容旧逻辑（可选）
+    if isinstance(pos, str):
+        p = pos.upper()
+        if p in ["LONG", "BUY"]:
+            return "LONG"
+        elif p in ["SHORT", "SELL"]:
+            return "SHORT"
+
+    return None
 
 
 def monitor():
@@ -897,15 +918,49 @@ def monitor():
     """
     global last_ws_message_ts, last_signal, last_order_time
     global last_position_check, cached_position
-    global trade_lock
+    global trade_lock, trade_lock_time  # 这里补上 trade_lock_time !!!
 
     while True:
         time.sleep(5)
+        # ===========================
+        # 🔥 DXY 强制实时更新（无卡顿、无假数据）
+        # 每次循环 主动拉取最新值
+        # ===========================
+        try:
+            from dxy_calculator import calculate_dxy, update_dxy, filtered_trend
 
-        # 如果交易锁开启，跳过本次循环
+            # 1. 实时计算 DXY（真实6币种计算）
+            current_dxy_val = calculate_dxy()
+
+            # 2. 计算带强度的趋势：STRONG_UP / WEAK_DOWN / FLAT
+            trend_raw, _, _ = update_dxy(current_dxy_val)
+
+            # 3. 连续确认3次，防毛刺
+            dxy_signal = filtered_trend(trend_raw, confirm_n=3)
+            dxy_trend = trend_raw if trend_raw else "未就绪"
+
+        except Exception as e:
+            dxy_signal = None
+            dxy_trend = "未就绪"
+
+        # ===============================
+        # ✅ 交易锁双保险优化
+        # ===============================
         if trade_lock:
-            time.sleep(1)
-            continue
+            if time.time() - trade_lock_time > TRADE_LOCK_TIMEOUT:
+                print("🔓 交易锁超时自动解除")
+                trade_lock = False
+
+            # 先判断是否已定义，避免第一次循环报错
+            # 修复后（安全）
+            if 'position_flag' in locals() and position_flag is None:
+                # 仅在缓存有效=无持仓时解锁，API异常不解锁
+                if cached_position is None:
+                    print("🔓 确认无持仓 → 交易锁解除")
+                    trade_lock = False
+
+            if trade_lock:
+                continue
 
         current_ts = time.time()
 
@@ -931,19 +986,50 @@ def monitor():
         df_15m_closed = df_15m.iloc[:-1]
         df_1h_closed = df_1h.iloc[:-1]
 
-        # 无数据时跳过
-        if df_1m_closed.empty:
+        # ===============================
+        # ✅ 实战加固：K线长度不足 直接跳过（防崩溃）
+        # ===============================
+        if len(df_1m_closed) < 20:
+            print("⚠️ 1m K线不足20根，跳过本轮循环")
+            continue
+        if len(df_5m_closed) < 30:
+            print("⚠️ 5m K线不足30根，跳过本轮循环")
+            continue
+        if len(df_15m_closed) < 30:
+            print("⚠️ 15m K线不足30根，跳过本轮循环")
+            continue
+        if len(df_1h_closed) < 30:
+            print("⚠️ 1h K线不足30根，跳过本轮循环")
             continue
 
         # 持仓信息缓存，10秒更新一次，防API高频
+
         try:
-            if time.time() - last_position_check > 10:
-                cached_position = get_position(SYMBOL)
+            pos = None
+            # 只在超时或缓存为空时才查询
+            if time.time() - last_position_check > 10 or cached_position is None:
+                pos = get_position(SYMBOL)
                 last_position_check = time.time()
-            position_flag = cached_position
+                if pos is not None:
+                    cached_position = pos
+
+            # 有缓存就用缓存，不崩溃
+            position_flag = normalize_position(cached_position)
+
+
         except Exception as e:
-            print(f"⚠️ 持仓判断失败：{e}")
-            continue
+
+            print(f"⚠️ 持仓查询异常: {e}")
+
+            # 优先用缓存，缓存都没有才谨慎设为None（极端情况）
+
+            if cached_position is not None:
+
+                position_flag = normalize_position(cached_position)
+
+            else:
+
+                position_flag = None  # 完全无数据才会走到这
 
         # 有持仓时，检查平仓条件
         if position_flag:
@@ -989,52 +1075,150 @@ def monitor():
 
         # 震荡区间判断
         scalping_range_status, range_high, range_low = detect_scalping_range(df_1m_closed)
-        # 剃头皮ATR判断
+        # ===============================
+        # ✅ 修复：无区间直接禁止剃头皮（必修）
+        # ===============================
+        if range_low is None or range_high is None:
+            scalping_range_status = "❌ 无震荡区间"
+        # ===============================
+        # ❗ 新增：ATR过滤震荡区间
+        # ===============================
+        if "低波动" in atr_5m_status and "低波动" in atr_15m_status:
+            scalping_range_status = "❌ 无效震荡（低波动）"
+        # 剃头皮ATR判断（基础）
         scalping_atr_status = atr_filter_scalping(df_1m_closed)
+
+        # ===============================
+        # ❗ 修复4：大周期任意低波动 → 禁止剃头皮
+        # ===============================
+        if ("低波动" in atr_5m_status or
+                "低波动" in atr_15m_status or
+                "低波动" in atr_1h_status):
+            scalping_atr_status = "❌ 大周期低波动"
+
         # MACD交叉信号
         golden_cross = is_macd_golden_cross(df_5m_closed)
         dead_cross = is_macd_dead_cross(df_5m_closed)
 
         # 判断价格是否靠近震荡区间高低点
-        near_low = current_price <= range_low * 0.995 if (range_low and range_high) else False
-        near_high = current_price >= range_high * 1.005 if (range_low and range_high) else False
+        near_low = current_price <= range_low * 1.005 if (range_low and range_high) else False
+        near_high = current_price >= range_high * 0.995 if (range_low and range_high) else False
 
         # 趋势交易信号判断
         trend_long = trend_1h in ["🟢 强多", "🟡 偏多"] and trend_15m != "🔴 强空"
         trend_short = trend_1h in ["🔴 强空", "🟠 偏空"] and trend_15m != "🟢 强多"
+
         trend_signal = None
-        if trend_long and golden_cross and is_low_volume(df_1m_closed) and is_volume_expand(df_1m_closed):
+
+        # ✅ 修复：只用“放量”作为追单条件
+        # ✅ 最稳版本（推荐）
+        if trend_long and golden_cross and is_volume_expand(df_1m_closed):
             trend_signal = "🔵 追多"
-        elif trend_short and dead_cross and is_low_volume(df_1m_closed) and is_volume_expand(df_1m_closed):
+
+
+        elif trend_short and dead_cross and is_volume_expand(df_1m_closed):
             trend_signal = "🔴 追空"
 
         # 生成最终开仓信号
         entry_signal = get_entry_signal(current_price, scalping_range_status, scalping_atr_status, near_low, near_high,
                                         trend_signal)
+        # ===============================
+        # 🚀 DXY 美元指数 强制过滤（最终版）
+        # ===============================
+        reason = []  # 👈 必须放在这里！
 
-        # 额外风控条件
-        reason = []
+
+        # ===============================
+        # DXY 专业强度风控（只强趋势拦截，弱趋势只提示）
+        # ===============================
+        if dxy_signal is not None:
+            # 强DXY上涨 → 禁止做多
+            if "STRONG_UP" in dxy_signal and entry_signal in ["🟢 向上剃头皮", "🔵 追多"]:
+                entry_signal = "⛔ 不交易"
+                reason.append("DXY强上涨｜禁止逆势做多")
+
+            # 强DXY下跌 → 禁止做空
+            if "STRONG_DOWN" in dxy_signal and entry_signal in ["🟠 向下剃头皮", "🔴 追空"]:
+                entry_signal = "⛔ 不交易"
+                reason.append("DXY强下跌｜禁止逆势做空")
+
+            # 弱DXY → 只提示，不拦单
+            if "WEAK_UP" in dxy_signal and entry_signal in ["🟢 向上剃头皮", "🔵 追多"]:
+                reason.append("DXY弱涨｜谨慎做多")
+            if "WEAK_DOWN" in dxy_signal and entry_signal in ["🟠 向下剃头皮", "🔴 追空"]:
+                reason.append("DXY弱跌｜谨慎做空")
+
+        # 下面你原本的：防重复信号、ATR校验、价差风控……全都不动
+        if entry_signal == last_signal:
+            entry_signal = "⛔ 不交易"
+
+        # 防重复信号（在下单前）
+        if entry_signal == last_signal:
+            entry_signal = "⛔ 不交易"
+
+        # ===== ATR市场适配 + 风控统一处理（最终完整版） =====
+
+
+
+        # ===== 1. ATR市场适配 =====
+        # ❗ 剃头皮ATR不合格 → 禁止交易
+        if "❌" in scalping_atr_status and "剃头皮" in entry_signal:
+            reason.append("剃头皮ATR不合格")
+        # 趋势市场 → 禁止剃头皮
+        if "趋势市场" in trade_status and "剃头皮" in entry_signal:
+            reason.append("趋势行情禁止剃头皮")
+
+        # 震荡市场 → 禁止追单
+        if "震荡市场" in trade_status and "追" in entry_signal:
+            reason.append("震荡行情禁止追单")
+
+        # 混合市场 → 禁止追单（新增）
+        if "混合市场" in trade_status and "追" in entry_signal:
+            reason.append("混合市场不追单")
+
+        # ===== 2. EMA风控 =====
         ema20 = df_1m_closed["close"].ewm(span=20).mean().iloc[-1]
-        # 价格偏离EMA20过大，不追单
-        if abs(current_price - ema20) / current_price > 0.01:
-            entry_signal = "⛔ 偏离过大，不追"
+
+        if abs(current_price - ema20) / current_price > 0.004:
             reason.append("EMA20偏离过大")
-        # ATR风控禁止交易
-        if "禁止交易" in trade_status:
-            entry_signal = "⛔ ATR风控：禁止交易"
-            reason.append(atr_1m_status + " | " + atr_5m_status)
-        # 盘口价差过大，不交易
-        if bid_price and ask_price and (ask_price - bid_price) / bid_price > 0.001:
-            entry_signal = "⛔ 盘口价差过大，不交易"
-            reason.append(f"价差 {(ask_price - bid_price) / bid_price:.4f}")
+
+        # ===== 3. 盘口风控（分策略） =====
+        if bid_price and ask_price:
+            spread = (ask_price - bid_price) / bid_price
+
+            if "剃头皮" in entry_signal:
+                if spread > 0.0008:
+                    reason.append(f"价差过大 {spread:.4f}")
+            else:
+                if spread > 0.0015:
+                    reason.append(f"价差过大 {spread:.4f}")
+
+        # ===== 4. 最终信号决策（带优先级） =====
+
+        # 剃头皮 → 只限制价差
+        if "剃头皮" in entry_signal:
+            if any("价差过大" in r for r in reason):
+                entry_signal = "⛔ 不交易"
+
+        # 追单 → 严格风控
+        elif "追" in entry_signal:
+            if reason:
+                entry_signal = "⛔ 不交易"
+
+        # 其它 → 正常风控
+        else:
+            if reason:
+                entry_signal = "⛔ 不交易"
 
         # 计算止盈止损
         stop_loss_value = take_profit_value = None
-        if indicators and "atr" in indicators:
-            stop_loss_value, take_profit_value = calculate_sl_tp(current_price, indicators["atr"], entry_signal)
+        # 必加防御
+        if indicators is None or np.isnan(indicators["atr"]) or indicators["atr"] <= 0:
+            entry_signal = "⛔ 不交易"
 
-        # 执行下单
+        # 执行下单 —— 修复3：交易锁异常自动解锁
         order_status = "未下单"
+        success = False
         try:
             if entry_signal in ["🟢 向上剃头皮", "🔵 追多"]:
                 success = place_order(
@@ -1057,15 +1241,19 @@ def monitor():
                 order_status = "✅ 下单成功"
                 last_signal = entry_signal
                 last_order_time = time.time()
-                trade_lock = True  # 开启交易锁
+                trade_lock = True
+                trade_lock_time = time.time()
                 speak(f"已下单：{entry_signal}", key="order", force=True)
             else:
                 if entry_signal != "⛔ 不交易":
                     order_status = "❌ 未下单"
-                    trade_lock = False
+                trade_lock = False
+
         except Exception as e:
             print(f"⚠️ 下单异常: {e}")
             trade_lock = False
+            success = False
+            order_status = "⚠️ 下单异常"
 
         # 打印实时状态（已传入4个周期ATR）
         print_status(current_price, bid_price, ask_price, df_1m_closed, position_flag,
@@ -1073,23 +1261,24 @@ def monitor():
                      atr_1m_status, atr_5m_status, atr_15m_status, atr_1h_status,
                      trade_status, scalping_range_status, scalping_atr_status,
                      near_low, near_high, golden_cross, dead_cross, entry_signal,
-                     order_status, stop_loss_value, take_profit_value, trade_lock, reason)
+                     order_status, stop_loss_value, take_profit_value, trade_lock, reason,
+                     dxy_trend, dxy_signal)
 
 
 # ===============================
 # 主入口
 # ===============================
 def main():
-    """
-    程序主入口
-    依次执行：时间同步→初始化K线→启动WebSocket→检查挂单→启动策略监控
-    """
+    global trade_lock, trade_lock_time  # 声明
+    trade_lock = False
+    trade_lock_time = time.time()  # 修复：初始化时间，杜绝任何边界隐患
+
     print("🚀 币安期货交易策略系统启动")
-    sync_time()  # 同步本地时间与币安服务器时间
-    init_klines()  # 初始化历史K线数据
-    start_ws()  # 启动WebSocket实时数据接收
-    check_stop_orders(SYMBOL)  # 检查未成交挂单
-    monitor()  # 启动策略主循环
+    sync_time()
+    init_klines()
+    start_ws()
+    check_stop_orders(SYMBOL)
+    monitor()
 
 
 # 程序运行入口

@@ -1,22 +1,26 @@
-import yfinance as yf
 import math
 import pandas as pd
+import time
 
 # 存储实时价格
 prices = {}
+dxy_history = []
+MAX_LEN = 200
+trend_buffer = []
+
 
 def on_message(msg):
     try:
         symbol = msg['id']
         price = float(msg['price'])
-
         prices[symbol] = price
 
         if len(prices) == 6:
-            calculate_dxy()
-
-    except Exception as e:
-        print("解析错误:", e)
+            dxy = calculate_dxy()
+            if dxy:
+                update_dxy(dxy)
+    except Exception:
+        pass
 
 
 def calculate_dxy():
@@ -36,68 +40,98 @@ def calculate_dxy():
             (usdsek ** 0.042) *
             (usdchf ** 0.036)
         )
+        return dxy
+    except Exception:
+        return None
 
-        print(f"美元指数 DXY: {dxy:.4f}")
-
-    except Exception as e:
-        print("计算错误:", e)
-
-
-ws = yf.WebSocket()
-
-ws.subscribe([
-    'EURUSD=X',
-    'JPY=X',
-    'GBPUSD=X',
-    'CAD=X',
-    'SEK=X',
-    'CHF=X'
-])
-
-ws.listen(on_message)
-
-dxy_history = []  # 保存历史DXY数值，长度可控
 
 def update_dxy(dxy_value):
-    """
-    更新DXY数据并计算趋势信号
-    dxy_value: 实时DXY
-    """
     global dxy_history
-    dxy_history.append(dxy_value)
+    if dxy_value is None:
+        return "FLAT", 0, 0
 
-    # 限制历史长度，避免内存无限增长
-    MAX_LEN = 200
+    dxy_history.append(dxy_value)
     if len(dxy_history) > MAX_LEN:
         dxy_history = dxy_history[-MAX_LEN:]
 
-    # 转成Series便于EMA计算
+    if len(dxy_history) < 2:
+        return "FLAT", 0, 0
+
+    prev = dxy_history[-2]
+    change_pct = (dxy_value - prev) / prev * 100
+    strength = abs(change_pct)
+
     s = pd.Series(dxy_history)
+    ema_short = s.ewm(span=5).mean().iloc[-1]
+    ema_long = s.ewm(span=20).mean().iloc[-1]
 
-    short_period = 5   # 短期平滑
-    long_period = 20   # 长期趋势
-
-    ema_short = s.ewm(span=short_period).mean().iloc[-1]
-    ema_long = s.ewm(span=long_period).mean().iloc[-1]
-
-    # 趋势信号
     if ema_short > ema_long:
-        trend = "UP"
+        base_trend = "UP"
     elif ema_short < ema_long:
-        trend = "DOWN"
+        base_trend = "DOWN"
     else:
-        trend = "FLAT"
+        base_trend = "FLAT"
 
-    return trend, ema_short, ema_long
+    if strength < 0.05:
+        strength_level = "FLAT"
+    elif strength < 0.2:
+        strength_level = "WEAK"
+    else:
+        strength_level = "STRONG"
 
+    final_trend = f"{strength_level}_{base_trend}" if base_trend != "FLAT" else "FLAT"
+    return final_trend, ema_short, ema_long
 
-trend_buffer = []  # 保存最近N个趋势
 
 def filtered_trend(trend, confirm_n=3):
+    if not trend:
+        return None
+
     trend_buffer.append(trend)
     if len(trend_buffer) > confirm_n:
         trend_buffer.pop(0)
-    # 如果连续 confirm_n 次趋势一致，才返回，否则返回None
+
     if len(set(trend_buffer)) == 1:
         return trend_buffer[0]
     return None
+
+
+# ===========================
+# 🔁 持续测试函数（你要的）
+# ===========================
+def test_dxy_continuous():
+    print("=" * 70)
+    print("🧪 DXY 持续测试模式（每 1 秒刷新）")
+    print("=" * 70)
+
+    # 模拟初始货币价格
+    test_prices = {
+        "EURUSD=X": 1.0800,
+        "JPY=X": 148.00,
+        "GBPUSD=X": 1.2600,
+        "CAD=X": 1.3500,
+        "SEK=X": 10.800,
+        "CHF=X": 0.8700
+    }
+
+    global prices
+    prices.update(test_prices)
+
+    while True:
+        dxy = calculate_dxy()
+        if not dxy:
+            print("❌ DXY 计算失败")
+            time.sleep(1)
+            continue
+
+        trend, ema5, ema20 = update_dxy(dxy)
+        confirmed = filtered_trend(trend)
+
+        # 🔥 持续打印
+        print(f"\r💵 DXY: {dxy:7.2f} | 趋势: {trend:12} | 确认: {confirmed} | EMA5: {ema5:.2f} EMA20: {ema20:.2f}", end="")
+
+        time.sleep(1)
+
+
+if __name__ == "__main__":
+    test_dxy_continuous()
