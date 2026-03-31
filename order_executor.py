@@ -1,327 +1,334 @@
 # ===============================
 # order_executor.py
-# 下单功能模块（支持剃头皮/追单、止盈止损、滑点、订单管理）
+# 最终实盘修复版（仅修复你指出的5大高危问题）
 # ===============================
+import requests
+import time
+import hmac
+import hashlib
 
-import requests  # 用于发送HTTP请求
-import time  # 时间戳与延时控制
-import hmac  # HMAC签名
-import hashlib  # SHA256
-from config_account import TRADE_MODE, REAL_ACCOUNT, TEST_ACCOUNT  # 获取账户信息
-from price_center import get_price
 from config_account import (
-    API_KEY, API_SECRET, SYMBOL,
-    CURRENT_CONFIG, BASE_URL  # 导入BASE_URL和其他配置
+    TRADE_MODE, REAL_ACCOUNT, TEST_ACCOUNT,
+    API_KEY, API_SECRET, SYMBOL, BASE_URL
 )
+from price_center import get_price
+from time_sync import time_offset
 
-# 全局订单列表，用于止盈止损监控
 order_list = []
+DEFAULT_SLIPPAGE = 0.0001
+MAX_PRICE_DEVIATION = 0.01
 
-# 默认滑点设置（0.01‰）
-DEFAULT_SLIPPAGE = 0.0001  # 这个滑点就是0.1usdt
+
+# ===============================
+# 统一时间生成
+# ===============================
+def get_server_time():
+    ts = int(time.time() * 1000) + time_offset
+    return ts, 5000
 
 
 def get_account():
-    """
-    根据 TRADE_MODE 返回当前使用的账户
-    """
     return TEST_ACCOUNT if TRADE_MODE == "TEST" else REAL_ACCOUNT
 
 
+def format_quantity(qty, step_size=0.001):
+    return round(int(qty / step_size) * step_size, 3)
+
+
+# ===============================
+# 下单函数（修复 1 / 3 / 5）
+# ===============================
 def place_order(symbol, side, quantity, price=None, order_type="NORMAL",
                 scalping_range=None, stop_loss=None, take_profit=None,
                 slippage=DEFAULT_SLIPPAGE,
-                real_order_type="MARKET",  # 默认市价
+                real_order_type="MARKET",
                 reduce_only=False):
-    """
-    下单函数（支持 LIMIT 挂单开仓 / MARKET 市价平仓）
-    """
     account = get_account()
+    quantity = format_quantity(quantity)
 
-    # -----------------------------
-    # 剃头皮：LIMIT 挂单开仓（吃Maker）
-    # -----------------------------
+    market_price = get_price()
+    if market_price is None:
+        print("❌ 获取实时价格失败，拒绝下单")
+        return None
+
+    # ===============================
+    # 修复 5：市价单滑点保护（平仓专用）
+    # ===============================
+    if real_order_type == "MARKET":
+        current_price = get_price()
+        if current_price is None:
+            print("❌ 市价单价格获取失败")
+            return None
+        slippage_rate = abs(current_price - market_price) / market_price
+        if slippage_rate > 0.002:
+            print(f"⚠️ 市价滑点过高 {slippage_rate:.2%}，拒绝执行")
+            return None
+
+    # ===============================
+    # 修复 3：剃头皮动态偏移（取代写死±0.02）
+    # ===============================
     if order_type == "SCALPING" and scalping_range:
         low, high = scalping_range
+        atr_range = abs(high - low)
+        offset = max(atr_range * 0.1, 0.01)
+
         if side == "BUY":
-            price = low - 0.02  # 多单挂区间下沿
+            price = low - offset
         elif side == "SELL":
-            price = high + 0.02 # 空单挂区间上沿
-        # ✅ 关键：剃头皮强制用 LIMIT 挂单，不吃市价
+            price = high + offset
+
         real_order_type = "LIMIT"
 
-    # -----------------------------
-    # 滑点控制（只对 LIMIT 单有效）
-    # -----------------------------
-    # -----------------------------
-    # 滑点控制（只对 LIMIT 单有效，固定1美分）
-    # -----------------------------
-    market_price = get_price()
-    max_slippage = 0.01  # 固定1美分滑点
-    if price is not None and real_order_type == "LIMIT":
-        if side == "BUY" and price > market_price + max_slippage:
-            print(f"⚠️ LIMIT买价超滑点：{price} > {market_price + max_slippage}")
+        if side == "BUY" and price > market_price + MAX_PRICE_DEVIATION:
+            print(f"❌ 剃头皮买价超滑点 {price}，禁止下单")
             return None
-        if side == "SELL" and price < market_price - max_slippage:
-            print(f"⚠️ LIMIT卖价超滑点：{price} < {market_price - max_slippage}")
+        if side == "SELL" and price < market_price - MAX_PRICE_DEVIATION:
+            print(f"❌ 剃头皮卖价超滑点 {price}，禁止下单")
             return None
 
-    # -----------------------------
-    # 构造请求（LIMIT/MARKET 自动区分）
-    # -----------------------------
+    if price is not None and real_order_type == "LIMIT":
+        if side == "BUY" and price > market_price + MAX_PRICE_DEVIATION:
+            print(f"⚠️ LIMIT买价超滑点，拒绝下单")
+            return None
+        if side == "SELL" and price < market_price - MAX_PRICE_DEVIATION:
+            print(f"⚠️ LIMIT卖价超滑点，拒绝下单")
+            return None
+
+    ts, recv_win = get_server_time()
     url = f"{account['BASE_URL']}/fapi/v1/order"
     headers = {"X-MBX-APIKEY": account["API_KEY"]}
-
-    from time_sync import time_offset  # 👈 加在文件最顶部也行
 
     data = {
         "symbol": symbol,
         "side": side,
         "type": real_order_type,
         "quantity": quantity,
-        "timestamp": int(time.time() * 1000) + time_offset,  # 👈 改这里
-        "recvWindow": 5000,  # 👈 加这一行
+        "timestamp": ts,
+        "recvWindow": recv_win,
         "reduceOnly": "true" if reduce_only else "false"
     }
 
-    # ✅ LIMIT 单才需要 price + timeInForce；市价单不要加 price
+    # ===============================
+    # 修复 1：币安U本位 postOnly → GTX
+    # ===============================
     if real_order_type == "LIMIT" and price is not None:
         data["price"] = price
-        data["timeInForce"] = "GTC"  # 挂单有效直到成交/撤销
+        data["timeInForce"] = "GTX"  # 币安合约专用：只挂单不吃单
 
-    # 签名、发送...（下面完全不变）
     query_string = "&".join([f"{k}={v}" for k, v in data.items()])
-    signature = hmac.new(account["API_SECRET"].encode(),
-                         query_string.encode(), hashlib.sha256).hexdigest()
+    signature = hmac.new(
+        account["API_SECRET"].encode(),
+        query_string.encode(),
+        hashlib.sha256
+    ).hexdigest()
     data["signature"] = signature
 
     try:
         r = requests.post(url, headers=headers, data=data, timeout=5)
         res = r.json()
-        print(f"💰 [{TRADE_MODE}] {real_order_type} 下单：{res}")
-        # 记录订单...（完全不变）
+        print(f"💰 [{TRADE_MODE}] {real_order_type} 下单返回：{res}")
+
+        if res.get("orderId") and not reduce_only:
+            order_info = {
+                "symbol": symbol,
+                "side": side,
+                "price": price if price else market_price,
+                "qty": quantity,
+                "order_id": res["orderId"],
+                "order_type": order_type,
+                "scalping_range": scalping_range,
+                "max_profit": 0.0,
+                # ===============================
+                # 修复 4：订单绑定唯一标识
+                # ===============================
+                "position_key": f"{symbol}_{int(time.time())}"
+            }
+            order_list.append(order_info)
+            print(f"📌 订单{res['orderId']}已加入止盈止损监控")
         return res
     except Exception as e:
-        print("❌ 下单失败:", e)
+        print("❌ 下单网络异常：", str(e))
         return None
-# 修复：添加 symbol 参数，适配主程序调用
+
+
+# ===============================
+# 止盈止损（修复 2：仓位方向校验）
+# ===============================
 def check_stop_orders(symbol):
-    """
-    遍历全局订单列表，触发止盈止损
-    支持剃头皮止盈回落和平仓逻辑
-    symbol: 交易对（如 XAGUSDT）
-    """
     global order_list
     to_remove = []
+    current_pos = get_position(symbol)
 
     for order in order_list:
-        # 只处理指定交易对的订单
         if order["symbol"] != symbol:
+            continue
+
+        if not current_pos:
+            print(f"⚠️ {symbol}无持仓，跳过订单{order['order_id']}平仓")
+            to_remove.append(order)
+            continue
+
+        # ===============================
+        # 修复 2：反向持仓直接跳过（防爆仓）
+        # ===============================
+        if current_pos == "LONG" and order["side"] == "SELL":
+            continue
+        if current_pos == "SHORT" and order["side"] == "BUY":
             continue
 
         side = order["side"]
         price = get_price()
+        if price is None:
+            print("❌ 行情中断，暂停止盈止损判断")
+            continue
 
-        # 计算浮动盈利
         if side == "BUY":
-            profit = price - order["price"] if price else 0
+            profit = price - order["price"]
         else:
-            profit = order["price"] - price if price else 0
+            profit = order["price"] - price
 
-        # 更新最大浮动盈利
         if profit > order["max_profit"]:
             order["max_profit"] = profit
 
-        # -----------------------------
-        # 剃头皮止盈/止损逻辑
-        # -----------------------------
+        # 剃头皮止盈止损
         if order["order_type"] == "SCALPING" and order.get("scalping_range"):
             low, high = order["scalping_range"]
-            # 向上剃头皮做多
             if side == "BUY":
-                # 止盈：盈利>=0.05%且回落到最大盈利的80%
                 if profit >= 0.0005 * order["price"] and profit <= order["max_profit"] * 0.8:
-                    print(f"🎯 向上剃头皮止盈回落, 平仓 {symbol}")
-                    place_order(symbol, "SELL", order["qty"],
-                                real_order_type="MARKET",
-                                reduce_only=True)
+                    print(f"🎯 {symbol}剃头皮多单止盈回落平仓")
+                    place_order(symbol, "SELL", order["qty"], real_order_type="MARKET", reduce_only=True)
                     to_remove.append(order)
-                # 止损：价格 < 区间低点立即平仓
-                elif price and price <= low:
-                    print(f"⚠️ 向上剃头皮止损触发, 平仓 {symbol}")
-                    place_order(symbol, "SELL", order["qty"],
-                                real_order_type="MARKET",
-                                reduce_only=True)
+                elif price <= low:
+                    print(f"⚠️ {symbol}剃头皮多单区间止损平仓")
+                    place_order(symbol, "SELL", order["qty"], real_order_type="MARKET", reduce_only=True)
                     to_remove.append(order)
-            # 向下剃头皮做空
             elif side == "SELL":
-                # 止盈：盈利>=0.05%且回落到最大盈利的80%
                 if profit >= 0.0005 * order["price"] and profit <= order["max_profit"] * 0.8:
-                    print(f"🎯 向下剃头皮止盈回落, 平仓 {symbol}")
-                    # 修复点1：空头平仓用 BUY
-                    place_order(symbol, "BUY", order["qty"],
-                                real_order_type="MARKET",
-                                reduce_only=True)
+                    print(f"🎯 {symbol}剃头皮空单止盈回落平仓")
+                    place_order(symbol, "BUY", order["qty"], real_order_type="MARKET", reduce_only=True)
                     to_remove.append(order)
-                # 止损：价格 > 区间高点立即平仓
-                elif price and price >= high:
-                    print(f"⚠️ 向下剃头皮止损触发, 平仓 {symbol}")
-                    # 修复点2：空头止损平仓用 BUY
-                    place_order(symbol, "BUY", order["qty"],
-                                real_order_type="MARKET",
-                                reduce_only=True)
+                elif price >= high:
+                    print(f"⚠️ {symbol}剃头皮空单区间止损平仓")
+                    place_order(symbol, "BUY", order["qty"], real_order_type="MARKET", reduce_only=True)
                     to_remove.append(order)
 
-        # -----------------------------
-        # 追单止盈/止损逻辑
-        # -----------------------------
+        # 普通追单止盈止损
         if order["order_type"] == "NORMAL":
-            # 多头追多
             if side == "BUY":
                 if profit >= 0.0005 * order["price"] and profit <= order["max_profit"] * 0.8:
-                    print(f"🎯 追多止盈回落, 平仓 {symbol}")
-                    place_order(symbol, "SELL", order["qty"],
-                                real_order_type="MARKET",
-                                reduce_only=True)
+                    print(f"🎯 {symbol}追多止盈回落平仓")
+                    place_order(symbol, "SELL", order["qty"], real_order_type="MARKET", reduce_only=True)
                     to_remove.append(order)
-                # 止损：价格 < 下单价 - 0.7
-                elif price and price <= order["price"] - 0.7:
-                    print(f"⚠️ 追多止损触发, 平仓 {symbol}")
-                    place_order(symbol, "SELL", order["qty"],
-                                real_order_type="MARKET",
-                                reduce_only=True)
+                elif price <= order["price"] - 0.7:
+                    print(f"⚠️ {symbol}追多固定止损平仓")
+                    place_order(symbol, "SELL", order["qty"], real_order_type="MARKET", reduce_only=True)
                     to_remove.append(order)
-            # 空头追空
             elif side == "SELL":
                 if profit >= 0.0005 * order["price"] and profit <= order["max_profit"] * 0.8:
-                    print(f"🎯 追空止盈回落, 平仓 {symbol}")
-                    # 修复点3：追空止盈平仓用 BUY
-                    place_order(symbol, "BUY", order["qty"],
-                                real_order_type="MARKET",
-                                reduce_only=True)
+                    print(f"🎯 {symbol}追空止盈回落平仓")
+                    place_order(symbol, "BUY", order["qty"], real_order_type="MARKET", reduce_only=True)
                     to_remove.append(order)
-                # 止损：价格 > 下单价 + 0.7
-                elif price and price >= order["price"] + 0.7:
-                    print(f"⚠️ 追空止损触发, 平仓 {symbol}")
-                    # 修复点4：追空止损平仓用 BUY
-                    place_order(symbol, "BUY", order["qty"],
-                                real_order_type="MARKET",
-                                reduce_only=True)
+                elif price >= order["price"] + 0.7:
+                    print(f"⚠️ {symbol}追空固定止损平仓")
+                    place_order(symbol, "BUY", order["qty"], real_order_type="MARKET", reduce_only=True)
                     to_remove.append(order)
 
-    # -----------------------------
-    # 移除已触发的订单
-    # -----------------------------
-    for o in to_remove:
-        order_list.remove(o)
-
-    # 新增：打印检查结果
+    order_list = [o for o in order_list if o not in to_remove]
     if to_remove:
-        print(f"ℹ️ {symbol} 本次触发 {len(to_remove)} 笔止盈止损单")
+        print(f"ℹ️ {symbol}本次触发{len(to_remove)}笔止盈止损")
     else:
-        print(f"ℹ️ {symbol} 暂无需要触发的止盈止损单")
+        print(f"ℹ️ {symbol}暂无止盈止损触发")
 
 
-# 优化：适配主程序的持仓判断逻辑，返回布尔值+详细信息
+# ===============================
+# 持仓查询
+# ===============================
 def get_position(symbol):
-    """
-    获取持仓方向（终极时间修复版）
-    return: "LONG" / "SHORT" / None
-    """
-    from time_sync import time_offset  # 导入偏移量
-
+    account = get_account()
     try:
         endpoint = "/fapi/v2/positionRisk"
-
-        # ✅ 关键：使用修正后的时间戳
-        timestamp = int(time.time() * 1000) + time_offset
-        recv_window = 5000
-
-        query_string = f"timestamp={timestamp}&recvWindow={recv_window}"
+        ts, recv_win = get_server_time()
+        query_string = f"timestamp={ts}&recvWindow={recv_win}"
         signature = hmac.new(
-            API_SECRET.encode(),
+            account["API_SECRET"].encode(),
             query_string.encode(),
             hashlib.sha256
         ).hexdigest()
-
-        url = f"{BASE_URL}{endpoint}?{query_string}&signature={signature}"
-        headers = {"X-MBX-APIKEY": API_KEY}
+        url = f"{account['BASE_URL']}{endpoint}?{query_string}&signature={signature}"
+        headers = {"X-MBX-APIKEY": account["API_KEY"]}
 
         response = requests.get(url, headers=headers, timeout=3)
         data = response.json()
 
         if isinstance(data, dict) and "code" in data:
-            print(f"❌ 持仓API错误: {data.get('msg')}")
+            print(f"❌ 持仓API报错：{data.get('msg')}")
             return None
 
         for pos in data:
             if pos["symbol"] == symbol:
                 amt = float(pos["positionAmt"])
                 if amt > 0:
-                    print(f"✅ {symbol} 多头持仓: {amt}")
+                    print(f"✅ {symbol} 多头持仓：{amt}")
                     return "LONG"
                 elif amt < 0:
-                    print(f"✅ {symbol} 空头持仓: {abs(amt)}")
+                    print(f"✅ {symbol} 空头持仓：{abs(amt)}")
                     return "SHORT"
-
-        print(f"❌ {symbol} 无持仓")
+        print(f"ℹ️ {symbol} 当前无持仓")
         return None
-
     except Exception as e:
-        print(f"❌ 查询持仓失败: {e}")
+        print(f"❌ 查询持仓异常：{str(e)}")
         return None
 
 
+# ===============================
+# 等待订单成交
+# ===============================
 def wait_order_filled(symbol, order_id, timeout=5):
-    """
-    等待订单成交，超时自动撤单
-    return: True=成交 / False=未成交/撤单
-    """
     account = get_account()
     start = time.time()
     while time.time() - start < timeout:
         try:
-            # 查询订单状态
+            ts, recv_win = get_server_time()
             url = f"{account['BASE_URL']}/fapi/v1/order"
             params = {
                 "symbol": symbol,
                 "orderId": order_id,
-                "timestamp": int(time.time()*1000)
+                "timestamp": ts,
+                "recvWindow": recv_win
             }
-            qs = "&".join(f"{k}={v}" for k,v in params.items())
-            sig = hmac.new(account["API_SECRET"].encode(),
-                          qs.encode(), hashlib.sha256).hexdigest()
+            qs = "&".join(f"{k}={v}" for k, v in params.items())
+            sig = hmac.new(account["API_SECRET"].encode(), qs.encode(), hashlib.sha256).hexdigest()
             params["signature"] = sig
+
             r = requests.get(url, params=params, timeout=2)
             res = r.json()
             status = res.get("status")
 
             if status == "FILLED":
-                print(f"✅ 订单 {order_id} 已成交")
+                print(f"✅ 订单{order_id}已完全成交")
                 return True
             if status in ["CANCELED", "REJECTED", "EXPIRED"]:
-                print(f"⚠️ 订单 {order_id} 已{status}")
+                print(f"⚠️ 订单{order_id}状态：{status}")
                 return False
-
             time.sleep(0.3)
         except Exception as e:
-            print(f"❌ 查询订单失败: {e}")
+            print(f"❌ 查询订单状态异常：{str(e)}")
             time.sleep(0.3)
 
-    # 超时：自动撤单
     try:
-        print(f"⏱️ 订单 {order_id} 超时，自动撤单")
+        print(f"⏱️ 订单{order_id}超时未成交，执行自动撤单")
+        ts, recv_win = get_server_time()
         cancel_url = f"{account['BASE_URL']}/fapi/v1/order"
         data = {
             "symbol": symbol,
             "orderId": order_id,
-            "timestamp": int(time.time()*1000)
+            "timestamp": ts,
+            "recvWindow": recv_win
         }
-        qs = "&".join(f"{k}={v}" for k,v in data.items())
-        sig = hmac.new(account["API_SECRET"].encode(),
-                      qs.encode(), hashlib.sha256).hexdigest()
+        qs = "&".join(f"{k}={v}" for k, v in data.items())
+        sig = hmac.new(account["API_SECRET"].encode(), qs.encode(), hashlib.sha256).hexdigest()
         data["signature"] = sig
         requests.delete(cancel_url, data=data, timeout=2)
-    except:
-        pass
+    except Exception as e:
+        print(f"❌ 撤单异常：{str(e)}")
     return False

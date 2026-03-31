@@ -2,13 +2,10 @@
 <project version="4">
   <component name="ChangeListManager">
     <list default="true" id="2b5d0043-632b-4234-9b49-6fc53a001d92" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/.idea/PythonProject.iml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/config_account.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/dxy_calculator.py" beforeDir="false" afterPath="$PROJECT_DIR$/dxy_calculator.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/main_engine.py" beforeDir="false" afterPath="$PROJECT_DIR$/main_engine.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/order_executor.py" beforeDir="false" afterPath="$PROJECT_DIR$/order_executor.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/time_sync.py" beforeDir="false" afterPath="$PROJECT_DIR$/time_sync.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -331,7 +328,7 @@
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
           <url>file://$PROJECT_DIR$/main_engine.py</url>
-          <line>1312</line>
+          <line>930</line>
           <option name="timeStamp" value="3" />
         </line-breakpoint>
       </breakpoints>
