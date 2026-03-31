@@ -72,12 +72,15 @@ def place_order(symbol, side, quantity, price=None, order_type="NORMAL",
     url = f"{account['BASE_URL']}/fapi/v1/order"
     headers = {"X-MBX-APIKEY": account["API_KEY"]}
 
+    from time_sync import time_offset  # 👈 加在文件最顶部也行
+
     data = {
         "symbol": symbol,
         "side": side,
-        "type": real_order_type,  # LIMIT / MARKET
+        "type": real_order_type,
         "quantity": quantity,
-        "timestamp": int(time.time() * 1000),
+        "timestamp": int(time.time() * 1000) + time_offset,  # 👈 改这里
+        "recvWindow": 5000,  # 👈 加这一行
         "reduceOnly": "true" if reduce_only else "false"
     }
 
@@ -222,15 +225,19 @@ def check_stop_orders(symbol):
 # 优化：适配主程序的持仓判断逻辑，返回布尔值+详细信息
 def get_position(symbol):
     """
-    获取持仓方向
-    return
-        "LONG" / "SHORT" / None
+    获取持仓方向（终极时间修复版）
+    return: "LONG" / "SHORT" / None
     """
+    from time_sync import time_offset  # 导入偏移量
+
     try:
         endpoint = "/fapi/v2/positionRisk"
-        timestamp = int(time.time() * 1000)
 
-        query_string = f"timestamp={timestamp}"
+        # ✅ 关键：使用修正后的时间戳
+        timestamp = int(time.time() * 1000) + time_offset
+        recv_window = 5000
+
+        query_string = f"timestamp={timestamp}&recvWindow={recv_window}"
         signature = hmac.new(
             API_SECRET.encode(),
             query_string.encode(),
@@ -238,23 +245,18 @@ def get_position(symbol):
         ).hexdigest()
 
         url = f"{BASE_URL}{endpoint}?{query_string}&signature={signature}"
+        headers = {"X-MBX-APIKEY": API_KEY}
 
-        headers = {
-            "X-MBX-APIKEY": API_KEY
-        }
-
-        response = requests.get(url, headers=headers, timeout=5)
+        response = requests.get(url, headers=headers, timeout=3)
         data = response.json()
 
-        # API错误处理
         if isinstance(data, dict) and "code" in data:
-            print(f"❌ 持仓查询API错误: {data.get('msg')}")
+            print(f"❌ 持仓API错误: {data.get('msg')}")
             return None
 
         for pos in data:
             if pos["symbol"] == symbol:
                 amt = float(pos["positionAmt"])
-
                 if amt > 0:
                     print(f"✅ {symbol} 多头持仓: {amt}")
                     return "LONG"

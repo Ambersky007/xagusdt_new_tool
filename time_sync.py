@@ -24,10 +24,12 @@ def get_server_time():
 def sync_time():
     global time_offset
     try:
-        server_time = get_server_time()
+        url = "https://fapi.binance.com/fapi/v1/time"
+        server_time = int(requests.get(url, timeout=3).json()["serverTime"])
         local_time = int(time.time() * 1000)
-        time_offset = server_time - local_time
 
+        # 计算偏移（关键）
+        time_offset = server_time - local_time
         print(f"🕒 时间同步完成，偏移: {time_offset} ms")
     except Exception as e:
         print(f"❌ 时间同步失败: {e}")

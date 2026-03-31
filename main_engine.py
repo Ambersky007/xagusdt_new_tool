@@ -45,8 +45,8 @@ from voice_alert import speak
 from price_center import update_ws_price, get_price
 # 时间同步模块
 from time_sync import sync_time
-from dxy_calculator import update_dxy, filtered_trend  # 你写的DXY模块
-import dxy_calculator
+
+#import dxy_calculator
 
 from order_executor import place_order, check_stop_orders, get_position, wait_order_filled
 
@@ -65,7 +65,7 @@ WS_URL = (
     f"wss://fstream.binance.com/stream?streams="
     f"{WS_SYMBOL}@aggTrade/"
     f"{WS_SYMBOL}@markPrice/"
-    f"{WS_SYMBOL}@depth/"        # ✅ 只改这一行！用 depth 实时增量流
+    f"{WS_SYMBOL}@depth5@100ms/"      
     f"{WS_SYMBOL}@kline_1m/"
     f"{WS_SYMBOL}@kline_5m/"
     f"{WS_SYMBOL}@kline_15m/"
@@ -78,7 +78,7 @@ INTERVALS = ["1m", "5m", "15m", "30m", "1h"]
 # 初始化K线时，从API获取的K线数量
 INIT_LIMIT = 120
 # WebSocket超时时间（秒），超过则触发HTTP兜底
-WS_TIMEOUT_SECONDS = 15
+WS_TIMEOUT_SECONDS = 60  #越久越穩當，但是會卡很久可能
 # 上一次WebSocket消息时间戳，用于判断连接是否存活
 last_ws_message_ts = 0
 # 下单冷却时间（秒），防止频繁开仓触发风控
@@ -254,7 +254,18 @@ def http_update():
     except Exception as e:
         print(f"⚠️ 盘口更新失败: {str(e)}")
 
+def get_orderbook_http(symbol):
+    try:
+        url = f"https://fapi.binance.com/fapi/v1/depth?symbol={symbol}&limit=5"
+        data = requests.get(url, timeout=3).json()
 
+        bid = float(data["bids"][0][0]) if data.get("bids") else None
+        ask = float(data["asks"][0][0]) if data.get("asks") else None
+
+        return bid, ask
+    except Exception as e:
+        print(f"⚠️ HTTP盘口获取失败: {e}")
+        return None, None
 # ===============================
 # 指标计算
 # ===============================
@@ -375,7 +386,7 @@ def analyze_trend(df):
 def on_message(ws, message):
     global ws_alive, last_ws_message_ts
     ws_alive = True
-    last_ws_message_ts = time.time()
+
     msg = json.loads(message)
 
     # 组合流必须拆分 stream + data
@@ -386,20 +397,20 @@ def on_message(ws, message):
         # 成交数据
         if data.get("e") == "aggTrade":
             update_ws_price(float(data["p"]))
+            last_ws_message_ts = time.time()
 
         # 标记价格
         elif data.get("e") == "markPriceUpdate":
             if get_price() is None:
                 update_ws_price(float(data["p"]))
 
-        # ==========================================
-        # ✅ 正确：depthUpdate 实时盘口（你现在的逻辑可用了）
-        # ==========================================
-        elif data.get("e") == "depthUpdate":
-            bids = data.get("b", [])
-            asks = data.get("a", [])
+        # ===============================
+        # ✅ 方案A 稳定盘口 depth5@100ms
+        # ===============================
+        elif data.get("lastUpdateId"):
+            bids = data.get("bids", [])
+            asks = data.get("asks", [])
 
-            # 安全取值，绝不崩溃
             if len(bids) > 0:
                 cache["depth"]["bid"] = float(bids[0][0])
             if len(asks) > 0:
@@ -519,37 +530,70 @@ def atr_filter(df, name=""):
 # 震荡区间识别
 # ===============================
 def detect_scalping_range(df):
-    if len(df) < 50:
-        return "数据不足", None, None
+    if len(df) < 20:
+        # 统一返回 5 个值！！！
+        return "数据不足", None, None, 0, 0
 
-    recent = df.tail(50)
+    recent = df.tail(20).copy()
 
-    high = recent["high"].max()
-    low = recent["low"].min()
-    mid = (high + low) / 2
+    top2 = recent.sort_values("high", ascending=False).head(2)
+    bot2 = recent.sort_values("low", ascending=True).head(2)
+    h1, h2 = top2["high"].values
+    l1, l2 = bot2["low"].values
 
-    # 上下分布
+    atr_mean = (recent["high"] - recent["low"]).ewm(span=10).mean().iloc[-1]
+
+    if abs(h1 - h2) > atr_mean * 0.3:
+        return "❌ 无有效平台", None, None, 0, 0  # 5个值
+    if abs(l1 - l2) > atr_mean * 0.3:
+        return "❌ 无有效平台", None, None, 0, 0  # 5个值
+
+    high_avg = (h1 + h2) / 2
+    low_avg = (l1 + l2) / 2
+    mid = (high_avg + low_avg) / 2
+
+    entry_buffer = atr_mean * 1.2
+
     above = (recent["close"] > mid).sum()
     below = (recent["close"] < mid).sum()
+    balance = min(above, below) / max(above, below) if max(above, below) else 0
+    range_pct = (high_avg - low_avg) / mid if mid else 999
 
-    balance = min(above, below) / max(above, below)
-
-    range_pct = (high - low) / mid
-
-    if balance < 0.6:
-        return "单边走势", None, None
-
+    if balance < 0.65:
+        return "❌ 单边走势", None, None, 0, 0
     if range_pct > 0.01:
-        return "波动过大", None, None
-
+        return "❌ 波动过大", None, None, 0, 0
     if range_pct < 0.002:
-        return "波动过小", None, None
+        return "❌ 波动过小", None, None, 0, 0
 
-    return "🟡 可剃头皮", high, low
+    tolerance = min((high_avg - low_avg) * 0.10, atr_mean * 1.5)
+    touch_high = (abs(recent["high"] - high_avg) < tolerance).sum()
+    touch_low = (abs(recent["low"] - low_avg) < tolerance).sum()
 
+    if touch_high < 2 or touch_low < 2:
+        return "❌ 触顶触底不足", None, None, 0, 0
 
+    deviation = abs(recent["close"] - mid) / mid
+
+    if len(df) >= 40:
+        prev = df.tail(40).head(20)
+        prev_h = prev["high"].max()
+        prev_l = prev["low"].min()
+        prev_mid = (prev_h + prev_l) / 2
+        prev_range = (prev_h - prev_l) / prev_mid if prev_mid else 999
+        if prev_range > 0.015:
+            return "❌ 前周期波动过大", None, None, 0, 0
+
+    score = 0
+    score += balance * 40
+    score += (1 - deviation.mean()) * 30
+    score += min(touch_high, touch_low) * 5
+    if 0.003 < range_pct < 0.008:
+        score += 20
+
+    return "🟡 可剃头皮", high_avg, low_avg, score, entry_buffer
 # ===============================
-# 剃头皮ATR（修复6：空值防护）
+# 剃头皮ATR（完整保留所有优点 + 统一20根K线）
 # ===============================
 def atr_filter_scalping(df):
     """
@@ -557,16 +601,18 @@ def atr_filter_scalping(df):
     波动必须在合理区间才允许剃头皮
     """
 
-    if len(df) < 50:
+    # 只改这里：50 → 20，其他全部保留原优点
+    if len(df) < 20:
         return "❌ 数据不足"
 
     high, low, close = df["high"], df["low"], df["close"]
     price = close.iloc[-1]
 
-    # ✅ 加固：防止价格为 0 除零崩溃
+    # ✅ 优点1：防价格为0 / 除零崩溃（必留）
     if price < 1e-6:
         return "❌ 价格异常"
-    # ===== 1. ATR计算 =====
+
+    # ===== 1. ATR计算（原逻辑，最稳定）=====
     tr1 = high - low
     tr2 = (high - close.shift(1)).abs()
     tr3 = (low - close.shift(1)).abs()
@@ -574,36 +620,35 @@ def atr_filter_scalping(df):
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     atr = tr.rolling(window=14).mean()
 
+    # ✅ 优点2：防空值崩溃（必留）
     if atr.empty or pd.isna(atr.iloc[-1]):
         return "❌ 指标异常"
 
     current_atr = atr.iloc[-1]
 
-    # ===== 2. 平滑ATR =====
+    # ===== 2. 平滑ATR（原逻辑，必留）=====
     atr_mean = atr.ewm(span=20).mean().iloc[-1]
 
     if atr_mean == 0 or np.isnan(atr_mean):
         return "❌ 数据异常"
 
-    # ===== 3. 价格标准化 =====
+    # ===== 3. 价格标准化（必留，跨品种通用）=====
     price = close.iloc[-1]
     atr_pct = current_atr / price
     atr_mean_pct = atr_mean / price
 
-    # ===== 4. 波动变化趋势（防止突然爆发） =====
+    # ===== 4. 波动趋势过滤（必留，防突然暴跌暴涨）=====
     atr_trend = atr.iloc[-1] - atr.iloc[-5]
-
-    if atr_trend > atr_mean * 0.2:
+    if atr_trend > atr_mean * 0.35:
         return "⚠️ 波动正在放大"
 
-    # ===== 5. 剃头皮波动区间 =====
-    if atr_pct >= atr_mean_pct * 1.8:
+    # ===== 5. 波动区间（剃头皮灵魂，必留）=====
+    if atr_pct >= atr_mean_pct * 1.9:
         return "❌ 波动过大"
-    elif atr_pct <= atr_mean_pct * 0.5:
+    elif atr_pct <= atr_mean_pct * 0.4:
         return "❌ 波动过小"
     else:
         return "✅ 可剃头皮"
-
 
 # ===============================
 # 成交量判断
@@ -652,7 +697,7 @@ def is_volume_expand(df):
     vol = df["volume"]
     current_vol = vol.iloc[-2]
     avg_vol = vol.iloc[-22:-2].mean()
-    is_expand = current_vol > avg_vol * 1.2  #这个值关乎追单的阈值，越大越不容易追
+    is_expand = current_vol > avg_vol * 0.9  #这个值关乎追单的阈值，越大越不容易追
     prev_vol = vol.iloc[-3]
     confirm = current_vol > prev_vol
     vol_std = vol.iloc[-22:-2].std()
@@ -839,14 +884,12 @@ def calculate_sl_tp(current_price, atr_value, entry_signal):
 
     return stop_loss, take_profit
 
-
 def print_status(current_price, bid_price, ask_price, df_1m_closed, position_flag,
-                 trend_5m, trend_15m, trend_1h,
-                 atr_1m_status, atr_5m_status, atr_15m_status, atr_1h_status,
-                 trade_status, scalping_range_status, scalping_atr_status,
-                 near_low, near_high, golden_cross, dead_cross, entry_signal,
-                 order_status, stop_loss_value, take_profit_value, trade_lock, reason,
-                 dxy_trend, dxy_signal):
+                     trend_5m, trend_15m, trend_1h,
+                     atr_1m_status, atr_5m_status, atr_15m_status, atr_1h_status,
+                     trade_status, scalping_range_status, scalping_atr_status,
+                     near_low, near_high, golden_cross, dead_cross, entry_signal,
+                     order_status, stop_loss_value, take_profit_value, trade_lock, reason):
     """
     控制台打印实时策略状态，方便监控
     """
@@ -882,20 +925,8 @@ def print_status(current_price, bid_price, ask_price, df_1m_closed, position_fla
     print(f"near_low: {near_low} | near_high: {near_high}")
     print(f"MACD金叉: {golden_cross} | MACD死叉: {dead_cross}")
 
-    # 🚀 显示 DXY 美元指数状态
-    dxy_display = f"💵DXY: {dxy_trend}"
-    if dxy_signal == "STRONG_UP":
-        dxy_display += " 📈 强涨"
-    elif dxy_signal == "STRONG_DOWN":
-        dxy_display += " 📉 强跌"
-    elif dxy_signal == "WEAK_UP":
-        dxy_display += " 📈 弱涨"
-    elif dxy_signal == "WEAK_DOWN":
-        dxy_display += " 📉 弱跌"
-    elif dxy_signal == "FLAT":
-        dxy_display += " ➖ 横盘"
 
-    print(f"最终信号: {entry_signal} {dxy_display} ({','.join(reason) if reason else '正常'})")
+    print(f"最终信号: {entry_signal}  ({','.join(reason) if reason else '正常'})")
     print(f"下单状态: {order_status}")
 
     if stop_loss_value and take_profit_value:
@@ -904,55 +935,73 @@ def print_status(current_price, bid_price, ask_price, df_1m_closed, position_fla
     print("=" * 30 + "\n")
 
 
-# 持仓判断（防止重复开仓）修复1：标准化币安持仓判断
+# ===============================
+# 【终极版】兼容币安 单向/双向 持仓
+# ===============================
 def normalize_position(pos):
     if not pos:
         return None
+    # ===============================
+    # ✅ 新增：支持字符串（你当前就是这个问题）
+    # ===============================
 
-    # ✅ 标准币安持仓格式
-    if isinstance(pos, dict):
-        qty = float(pos.get("positionAmt", 0))
-
-        if abs(qty) < 1e-6:
-            return None
-
-        return "LONG" if qty > 0 else "SHORT"
-
-    # 兼容旧逻辑（可选）
     if isinstance(pos, str):
-        p = pos.upper()
-        if p in ["LONG", "BUY"]:
+            pos = pos.upper().strip()
+            if pos in ["LONG", "BUY"]:
+                return "LONG"
+            elif pos in ["SHORT", "SELL"]:
+                return "SHORT"
+            else:
+                return None
+    # ============== 双向持仓模式(Hedge Mode) ==============
+    if isinstance(pos, list):
+        long_qty = 0.0
+        short_qty = 0.0
+
+        for item in pos:
+            try:
+                qty = float(item.get("positionAmt", 0))
+                side = item.get("positionSide", "").upper()
+
+                if side == "LONG":
+                    long_qty = qty
+                elif side == "SHORT":
+                    short_qty = qty
+            except:
+                continue
+
+        # 核心判断：只要有持仓就返回
+        if abs(long_qty) > 1e-4:
             return "LONG"
-        elif p in ["SHORT", "SELL"]:
+        if abs(short_qty) > 1e-4:
             return "SHORT"
+        return None
+
+    # ============== 单向持仓模式(One-way) ==============
+    if isinstance(pos, dict):
+        try:
+            qty = float(pos.get("positionAmt", 0))
+            if abs(qty) < 1e-4:
+                return None
+            return "LONG" if qty > 0 else "SHORT"
+        except:
+            return None
 
     return None
 
 
+
+
 def monitor():
-    """
-    策略主监控循环（更激进开仓版）
-    5秒执行一次：判断信号、检查持仓、下单、平仓
-    """
     global last_ws_message_ts, last_signal, last_order_time
     global last_position_check, cached_position
     global trade_lock, trade_lock_time
 
+
+
     while True:
         time.sleep(5)
 
-        # ===============================
-        # 🔥 DXY 强制实时更新（无卡顿、无假数据）
-        # ===============================
-        try:
-            from dxy_calculator import calculate_dxy, update_dxy, filtered_trend
-            current_dxy_val = calculate_dxy()
-            trend_raw, _, _ = update_dxy(current_dxy_val)
-            dxy_signal = filtered_trend(trend_raw, confirm_n=3)
-            dxy_trend = trend_raw if trend_raw else "未就绪"
-        except:
-            dxy_signal = None
-            dxy_trend = "未就绪"
 
         # ===============================
         # WS 超时兜底
@@ -974,28 +1023,65 @@ def monitor():
             df_1h = pd.DataFrame(cache["klines"]["1h"])
             bid_price = cache["depth"]["bid"]
             ask_price = cache["depth"]["ask"]
+        # ===============================
+        # 🔥 盘口兜底（WS失效时使用HTTP）
+        # ===============================
+        if bid_price is None or ask_price is None:
+            print("⚠️ 盘口异常 → HTTP兜底")
+            bid_price, ask_price = get_orderbook_http(SYMBOL)
 
-        df_1m_closed = df_1m.iloc[:-1]
-        df_5m_closed = df_5m.iloc[:-1]
-        df_15m_closed = df_15m.iloc[:-1]
-        df_1h_closed = df_1h.iloc[:-1]
+            # 写回缓存，防止后面继续用None
+            with lock:
+                cache["depth"]["bid"] = bid_price
+                cache["depth"]["ask"] = ask_price
+
+        # 允许盘中信号，不等待K线收盘
+        df_1m_closed = df_1m
+        df_5m_closed = df_5m
+        df_15m_closed = df_15m
+        df_1h_closed = df_1h
 
         # K线不足直接跳
         if len(df_1m_closed) < 20 or len(df_5m_closed) < 30 or len(df_15m_closed) < 30 or len(df_1h_closed) < 30:
             continue
 
         # ===============================
-        # 持仓查询
+        # 【终极修复】时间同步+持仓查询（彻底解决Timestamp错误）
         # ===============================
         try:
-            if time.time() - last_position_check > 10 or cached_position is None:
-                pos = get_position(SYMBOL)
-                last_position_check = time.time()
-                if pos is not None:
+            # ✅ 强制每次查询前同步时间（必杀技）
+            sync_time()
+            time.sleep(0.1)
+
+            # 强制实时查询，不使用缓存
+            pos = get_position(SYMBOL)
+            cached_position = pos
+            last_position_check = time.time()
+
+            # 识别持仓
+            position_flag = normalize_position(pos)
+
+            # 调试日志
+            print(f"[DEBUG] 原始持仓: {pos}")
+            print(f"[DEBUG] 识别结果: {position_flag}")
+
+        except Exception as e:
+            err = str(e)
+            print(f"⚠️ API错误: {err}")
+
+            # ✅ 自动重试：时间错了就再同步一次
+            if "Timestamp" in err or "time" in err:
+                print("⏰ 自动修复时间...")
+                sync_time()
+                time.sleep(0.3)
+                try:
+                    pos = get_position(SYMBOL)
                     cached_position = pos
-            position_flag = normalize_position(cached_position)
-        except:
-            position_flag = normalize_position(cached_position) if cached_position is not None else None
+                    position_flag = normalize_position(pos)
+                except:
+                    position_flag = None
+            else:
+                position_flag = None
 
         # ===============================
         # trade_lock 优化：无持仓自动解锁
@@ -1046,28 +1132,55 @@ def monitor():
         trend_15m = analyze_trend(df_15m_closed)
         trend_1h = analyze_trend(df_1h_closed)
 
-        scalping_range_status, range_high, range_low = detect_scalping_range(df_1m_closed)
+        # 🔥 修复：接收 5 个返回值（状态、高、低、评分、entry_buffer）
+        scalping_range_status, range_high, range_low, score, entry_buffer = detect_scalping_range(df_1m_closed)
+
+        # DEBUG 打印
+        print("【DEBUG 震荡】", scalping_range_status, "高:", range_high, "低:", range_low)
+
+        # 修复：不覆盖真实原因
         if range_low is None or range_high is None:
-            scalping_range_status = "❌ 无震荡区间"
+            scalping_range_status += "（无有效区间）"
 
         scalping_atr_status = atr_filter_scalping(df_1m_closed)
         # ✅ 放宽大周期 ATR 限制
-        if "低波动" in atr_1h_status:
-            scalping_atr_status = "❌ 大周期低波动"
+        scalping_atr_status = atr_filter_scalping(df_1m_closed)
+        # ✅ 修复：只拦大周期高波动，不拦低波动，剥头皮就能开了
+        #if "高波动" in atr_1h_status:
+        #    scalping_atr_status = "❌ 大周期高波动"        #暂时关掉了大周期波动过滤
 
-        golden_cross = is_macd_golden_cross(df_5m_closed)
-        dead_cross = is_macd_dead_cross(df_5m_closed)
+        # 改：1分钟MACD信号 + 5分钟/15分钟 辅助共振
+        golden_1m = is_macd_golden_cross(df_1m_closed)
+        dead_1m = is_macd_dead_cross(df_1m_closed)
 
-        near_low = current_price <= range_low * 1.005 if (range_low and range_high) else False
-        near_high = current_price >= range_high * 0.995 if (range_low and range_high) else False
+        golden_5m = is_macd_golden_cross(df_5m_closed)
+        dead_5m = is_macd_dead_cross(df_5m_closed)
+
+        golden_15m = is_macd_golden_cross(df_15m_closed)
+        dead_15m = is_macd_dead_cross(df_15m_closed)
+
+        # 最终金叉：1分钟形成 OR (5分钟/15分钟任意一个金叉)
+        golden_cross = golden_1m or (golden_5m or golden_15m)
+
+        # 最终死叉：1分钟形成 OR (5分钟/15分钟任意一个死叉)
+        dead_cross = dead_1m or (dead_5m or dead_15m)
+        trend_signal = None  # ✅ 修复：必须先赋值，防止报错
+        near_low  = range_low  -0.02 <= current_price <= range_low +0.02 if (range_low and range_high) else False
+        near_high = range_high-0.02 <= current_price <= range_high +0.02 if (range_low and range_high) else False
 
         trend_long = trend_1h in ["🟢 强多", "🟡 偏多"] and trend_15m != "🔴 强空"
         trend_short = trend_1h in ["🔴 强空", "🟠 偏空"] and trend_15m != "🟢 强多"
 
-        trend_signal = None
-        if trend_long and golden_cross and is_volume_expand(df_1m_closed):
+        # 原代码  暫時不卡放量
+        # if trend_long and golden_cross and is_volume_expand(df_1m_closed):
+        #     trend_signal = "🔵 追多"
+        # elif trend_short and dead_cross and is_volume_expand(df_1m_closed):
+        #     trend_signal = "🔴 追空"
+
+        # 修复后（放宽放量，实盘立刻触发）
+        if trend_long and golden_cross:
             trend_signal = "🔵 追多"
-        elif trend_short and dead_cross and is_volume_expand(df_1m_closed):
+        elif trend_short and dead_cross:
             trend_signal = "🔴 追空"
 
         entry_signal = get_entry_signal(current_price, scalping_range_status, scalping_atr_status,
@@ -1087,14 +1200,7 @@ def monitor():
         # ===============================
         reason = []
 
-        # ===============================
-        # DXY 风控（弱趋势只提示，不强制禁止）
-        # ===============================
-        if dxy_signal is not None:
-            if "STRONG_UP" in dxy_signal and entry_signal in ["🟢 向上剃头皮", "🔵 追多"]:
-                reason.append("DXY强涨 → 谨慎多")
-            if "STRONG_DOWN" in dxy_signal and entry_signal in ["🟠 向下剃头皮", "🔴 追空"]:
-                reason.append("DXY强跌 → 谨慎空")
+
 
         # ===============================
         # 重复信号判断
@@ -1136,6 +1242,7 @@ def monitor():
 
         if not trade_lock and entry_signal in ["🟢 向上剃头皮", "🔵 追多", "🟠 向下剃头皮", "🔴 追空"]:
             try:
+                sync_time()  # <-- 每次下单前强制同步
                 res = place_order(
                     symbol=SYMBOL,
                     side="BUY" if entry_signal in ["🟢 向上剃头皮", "🔵 追多"] else "SELL",
@@ -1172,7 +1279,6 @@ def monitor():
                 print(f"下单异常：{e}")
                 success = False
 
-
         if success:
             order_status = "✅ 下单成功"
             last_signal = entry_signal
@@ -1180,6 +1286,9 @@ def monitor():
             trade_lock_time = time.time()
             speak(f"开仓：{entry_signal}", key="order", force=True)
             last_order_time = time.time()
+
+            # ✅ 必加：等待币安持仓同步
+            time.sleep(0.5)
         else:
             if entry_signal != "⛔ 不交易":
                 order_status = "❌ 未下单"
@@ -1189,8 +1298,8 @@ def monitor():
                      atr_1m_status, atr_5m_status, atr_15m_status, atr_1h_status,
                      trade_status, scalping_range_status, scalping_atr_status,
                      near_low, near_high, golden_cross, dead_cross, entry_signal,
-                     order_status, stop_loss_value, take_profit_value, trade_lock, reason,
-                     dxy_trend, dxy_signal)
+                     order_status, stop_loss_value, take_profit_value, trade_lock, reason
+                    )
 
 
 # ===============================
@@ -1204,6 +1313,8 @@ def main():
     print("🚀 币安期货交易策略系统启动")
     sync_time()
     init_klines()
+
+
     start_ws()
     check_stop_orders(SYMBOL)
     monitor()

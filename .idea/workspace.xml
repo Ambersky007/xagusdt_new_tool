@@ -2,12 +2,13 @@
 <project version="4">
   <component name="ChangeListManager">
     <list default="true" id="2b5d0043-632b-4234-9b49-6fc53a001d92" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/PythonProject.iml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/config_account.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/dxy_calculator.py" beforeDir="false" afterPath="$PROJECT_DIR$/dxy_calculator.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/main_engine.py" beforeDir="false" afterPath="$PROJECT_DIR$/main_engine.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/order_executor.py" beforeDir="false" afterPath="$PROJECT_DIR$/order_executor.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/readme.txt" beforeDir="false" afterPath="$PROJECT_DIR$/readme.txt" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/voice_alert.py" beforeDir="false" afterPath="$PROJECT_DIR$/voice_alert.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/time_sync.py" beforeDir="false" afterPath="$PROJECT_DIR$/time_sync.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -68,10 +69,12 @@
     "Python.websocket_config.executor": "Run",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
+    "RunOnceActivity.git.unshallow": "true",
     "RunOnceActivity.typescript.service.memoryLimit.init": "true",
+    "SHARE_PROJECT_CONFIGURATION_FILES": "true",
     "git-widget-placeholder": "main",
     "last_opened_file_path": "F:/PythonProject",
-    "settings.editor.selected.configurable": "com.intellij.pycharm.community.ide.impl.configuration.PythonContentEntriesConfigurable",
+    "settings.editor.selected.configurable": "com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable",
     "vue.rearranger.settings.migration": "true"
   }
 }]]></component>
@@ -84,7 +87,7 @@
       <recent name="F:\PythonProject\config" />
     </key>
   </component>
-  <component name="RunManager" selected="Python.main_engine (1)">
+  <component name="RunManager" selected="Python.main_engine">
     <configuration name="config_account" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="BinanceAG_LH" />
       <option name="ENV_FILES" value="" />
@@ -214,8 +217,9 @@
         <env name="PYTHONUNBUFFERED" value="1" />
       </envs>
       <option name="SDK_HOME" value="" />
+      <option name="SDK_NAME" value="Python 3.14 (PythonProject)" />
       <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
-      <option name="IS_MODULE_SDK" value="true" />
+      <option name="IS_MODULE_SDK" value="false" />
       <option name="ADD_CONTENT_ROOTS" value="true" />
       <option name="ADD_SOURCE_ROOTS" value="true" />
       <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
@@ -279,18 +283,17 @@
     </configuration>
     <recent_temporary>
       <list>
-        <item itemvalue="Python.main_engine (1)" />
+        <item itemvalue="Python.main_engine" />
         <item itemvalue="Python.dxy_calculator (1)" />
+        <item itemvalue="Python.main_engine (1)" />
         <item itemvalue="Python.config_account" />
         <item itemvalue="Python.tnx_maket" />
-        <item itemvalue="Python.dxy_calculator" />
       </list>
     </recent_temporary>
   </component>
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
-        <option value="bundled-js-predefined-d6986cc7102b-9b0f141eb926-JavaScript-PY-253.31033.139" />
         <option value="bundled-python-sdk-2653e85de345-6d6dccd035ac-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-253.31033.139" />
       </set>
     </attachedChunks>
@@ -326,6 +329,11 @@
           <line>8</line>
           <option name="timeStamp" value="2" />
         </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/main_engine.py</url>
+          <line>1312</line>
+          <option name="timeStamp" value="3" />
+        </line-breakpoint>
       </breakpoints>
     </breakpoint-manager>
   </component>
@@ -334,14 +342,14 @@
     <SUITE FILE_PATH="coverage/BinanceAG_LH$multi_timeframe.coverage" NAME="multi_timeframe Coverage Results" MODIFIED="1773503942454" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/analysis_engine" />
     <SUITE FILE_PATH="coverage/BinanceAG_LH$websocket.coverage" NAME="binance_ws.py Coverage Results" MODIFIED="1773980172582" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/BinanceAG_LH$my_by_sw.coverage" NAME="my_by_sw Coverage Results" MODIFIED="1773983589371" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
-    <SUITE FILE_PATH="coverage/BinanceAG_LH$dxy_calculator__1_.coverage" NAME="dxy_calculator (1) Coverage Results" MODIFIED="1774700087021" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/BinanceAG_LH$dxy_calculator__1_.coverage" NAME="dxy_calculator (1) Coverage Results" MODIFIED="1774854556906" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/BinanceAG_LH$config_account.coverage" NAME="config_account Coverage Results" MODIFIED="1774617708219" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/BinanceAG_LH$core_model.coverage" NAME="core_model Coverage Results" MODIFIED="1773504908145" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/score_engine" />
     <SUITE FILE_PATH="coverage/BinanceAG_LH$binance_ws.coverage" NAME="binance_ws Coverage Results" MODIFIED="1774011562532" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/BinanceAG_LH$binance_ws_py__1_.coverage" NAME="binance_ws.py (1) Coverage Results" MODIFIED="1773986860069" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/BinanceAG_LH$storage.coverage" NAME="storage Coverage Results" MODIFIED="1773504774878" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/data_engine" />
     <SUITE FILE_PATH="coverage/BinanceAG_LH$trend.coverage" NAME="trend Coverage Results" MODIFIED="1773504819933" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/indicator_engine" />
-    <SUITE FILE_PATH="coverage/BinanceAG_LH$main_engine__1_.coverage" NAME="main_engine (1) Coverage Results" MODIFIED="1774704433294" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/BinanceAG_LH$main_engine__1_.coverage" NAME="main_engine (1) Coverage Results" MODIFIED="1774706386059" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/BinanceAG_LH$market_data.coverage" NAME="market_data Coverage Results" MODIFIED="1774010571195" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/core" />
     <SUITE FILE_PATH="coverage/BinanceAG_LH$hgxs.coverage" NAME="hgxs Coverage Results" MODIFIED="1774265516295" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/BinanceAG_LH$tnx_maket.coverage" NAME="tnx_maket Coverage Results" MODIFIED="1774266427442" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
@@ -352,7 +360,7 @@
     <SUITE FILE_PATH="coverage/BinanceAG_LH$order_executor.coverage" NAME="order_executor Coverage Results" MODIFIED="1774151791521" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/BinanceAG_LH$binance_data.coverage" NAME="binance_data Coverage Results" MODIFIED="1773507885244" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/data_engine" />
     <SUITE FILE_PATH="coverage/BinanceAG_LH$config.coverage" NAME="config Coverage Results" MODIFIED="1773503966696" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/config" />
-    <SUITE FILE_PATH="coverage/BinanceAG_LH$main_engine.coverage" NAME="main_engine Coverage Results" MODIFIED="1774087436693" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/BinanceAG_LH$main_engine.coverage" NAME="main_engine Coverage Results" MODIFIED="1774873390251" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/BinanceAG_LH$risk_control.coverage" NAME="risk_control Coverage Results" MODIFIED="1773504851068" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/risk_engine" />
     <SUITE FILE_PATH="coverage/BinanceAG_LH$main.coverage" NAME="main Coverage Results" MODIFIED="1773507897673" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
   </component>
